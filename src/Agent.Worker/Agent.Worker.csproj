@@ -7,10 +7,6 @@
     <SuppressTfmSupportBuildWarnings>true</SuppressTfmSupportBuildWarnings>
   </PropertyGroup>
 
-  <PropertyGroup>
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-  </PropertyGroup>
-
   <ItemGroup>
     <ProjectReference Include="..\Microsoft.VisualStudio.Services.Agent\Microsoft.VisualStudio.Services.Agent.csproj" />
     <ProjectReference Include="..\Agent.Sdk\Agent.Sdk.csproj" />
