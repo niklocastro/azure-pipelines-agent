@@ -176,11 +176,21 @@ namespace Agent.Plugins.Repository
                     {
                         await IOUtil.DeleteFileWithRetry(Path.Combine(this.SourcesDirectory, temporaryFileWithCommand), CancellationToken);
                     }
+                    catch (UnauthorizedAccessException uaEx)
+                    {
+                        ExecutionContext.Output($"Access denied deleting secure command file '{temporaryFileWithCommand}': {uaEx.Message}");
+                    }
+                    catch (DirectoryNotFoundException dnfEx)
+                    {
+                        ExecutionContext.Output($"Directory not found when deleting secure command file: {dnfEx.Message}");
+                    }
+                    catch (IOException ioEx)
+                    {
+                        ExecutionContext.Output($"I/O error deleting secure command file '{temporaryFileWithCommand}': {ioEx.Message}");
+                    }
                     catch (Exception ex)
                     {
-                        ExecutionContext.Output($"Unable to delete command file which is used to pass data, ex:{ex.GetType()}");
-                        throw;
-
+                        ExecutionContext.Output($"Unable to delete command file which is used to pass data, ex:{ex.GetType()}: {ex.Message}");
                     }
                 }
 

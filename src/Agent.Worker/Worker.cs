@@ -45,35 +45,75 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             using (var jobRequestCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(HostContext.AgentShutdownToken))
             using (var channelTokenSource = new CancellationTokenSource())
             {
-                // Start the channel.
-                Trace.Info("Starting process channel client - establishing IPC communication with listener - pipeIn: {0}, pipeOut: {1}", pipeIn, pipeOut);
-                channel.StartClient(pipeIn, pipeOut);
-                Trace.Info("IPC channel established successfully - communication link active with listener process");
-
-                // Wait for up to 30 seconds for a message from the channel.
-                Trace.Info("Process channel established - waiting for job message from listener process");
-                HostContext.WritePerfCounter("WorkerWaitingForJobMessage");
                 WorkerMessage channelMessage;
-                using (var csChannelMessage = new CancellationTokenSource(_workerStartTimeout))
+                Pipelines.AgentJobRequestMessage jobMessage;
+                try
                 {
-                    channelMessage = await channel.ReceiveAsync(csChannelMessage.Token);
-                }
+                    Trace.Info("Starting process channel client - establishing IPC communication with listener - pipeIn: {0}, pipeOut: {1}", pipeIn, pipeOut);
+                    // Start the channel.
+                    channel.StartClient(pipeIn, pipeOut);
 
-                // Deserialize the job message.
-                Trace.Info("Job message received from listener - beginning deserialization and validation");
-                ArgUtil.Equal(MessageType.NewJobRequest, channelMessage.MessageType, nameof(channelMessage.MessageType));
-                ArgUtil.NotNullOrEmpty(channelMessage.Body, nameof(channelMessage.Body));
-                var jobMessage = JsonUtility.FromString<Pipelines.AgentJobRequestMessage>(channelMessage.Body);
-                ArgUtil.NotNull(jobMessage, nameof(jobMessage));
+                    // Wait for up to 30 seconds for a message from the channel.
+                    HostContext.WritePerfCounter("WorkerWaitingForJobMessage");
+                    Trace.Info("Waiting to receive the job message from the channel.");
+                    using (var csChannelMessage = new CancellationTokenSource(_workerStartTimeout))
+                    {
+                        channelMessage = await channel.ReceiveAsync(csChannelMessage.Token);
+                    }
+
+                    // Deserialize the job message.
+                    Trace.Info("Message received.");
+                    ArgUtil.Equal(MessageType.NewJobRequest, channelMessage.MessageType, nameof(channelMessage.MessageType));
+                    ArgUtil.NotNullOrEmpty(channelMessage.Body, nameof(channelMessage.Body));
+                    jobMessage = JsonUtility.FromString<Pipelines.AgentJobRequestMessage>(channelMessage.Body);
+                    ArgUtil.NotNull(jobMessage, nameof(jobMessage));
+                }
+                catch (OperationCanceledException oce)
+                {
+                    Trace.Error($"Timed out waiting for job message: {oce.Message}");
+                    return TaskResultUtil.TranslateToReturnCode(TaskResult.Failed);
+                }
+                catch (ArgumentException argEx)
+                {
+                    Trace.Error($"Invalid job message received: {argEx.Message}");
+                    Trace.Error(argEx);
+                    return TaskResultUtil.TranslateToReturnCode(TaskResult.Failed);
+                }
+                catch (Exception ex)
+                {
+                    Trace.Error($"Failed to initialize worker channel or deserialize job message: {ex.Message}");
+                    Trace.Error(ex);
+                    return TaskResultUtil.TranslateToReturnCode(TaskResult.Failed);
+                }
                 HostContext.WritePerfCounter($"WorkerJobMessageReceived_{jobMessage.RequestId.ToString()}");
 
-                Trace.Info("Job message deserialized successfully [JobId:{0}, PlanId:{1}, RequestId:{2}]",
-                    jobMessage.JobId, jobMessage.Plan.PlanId, jobMessage.RequestId);
-                jobMessage = WorkerUtilities.DeactivateVsoCommandsFromJobMessageVariables(jobMessage);
+                Trace.Info("Deactivating vso commands in job message variables.");
+                try
+                {
+                    jobMessage = WorkerUtilities.DeactivateVsoCommandsFromJobMessageVariables(jobMessage);
+                }
+                catch (Exception ex)
+                {
+                    Trace.Warning($"Failed to deactivate VSO commands from job variables: {ex.Message}");
+                }
 
                 // Initialize the secret masker and set the thread culture.
-                InitializeSecretMasker(jobMessage);
-                SetCulture(jobMessage);
+                try
+                {
+                    InitializeSecretMasker(jobMessage);
+                }
+                catch (Exception ex)
+                {
+                    Trace.Warning($"Failed to initialize secret masker: {ex.Message}");
+                }
+                try
+                {
+                    SetCulture(jobMessage);
+                }
+                catch (Exception ex)
+                {
+                    Trace.Warning($"Failed to set culture: {ex.Message}");
+                }
 
                 // Start the job.
                 Trace.Info("Job preprocessing complete - starting JobRunner execution with detailed message logging");
@@ -88,7 +128,20 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     messageLoopIteration++;
                     // Start listening for a cancel message from the channel.
                     Trace.Info("Starting listener for control messages from listener process [Iteration:{0}]", messageLoopIteration);
-                    Task<WorkerMessage> channelTask = channel.ReceiveAsync(channelTokenSource.Token);
+                    Task<WorkerMessage> channelTask = null;
+                    try
+                    {
+                        channelTask = channel.ReceiveAsync(channelTokenSource.Token);
+                    }
+                    catch (Exception ex)
+                    {
+                        Trace.Error($"Failed to begin receive on worker channel: {ex.Message}");
+                        Trace.Error(ex);
+                        // Attempt to cancel the job and break the loop.
+                        cancel = true;
+                        jobRequestCancellationToken.Cancel();
+                        break;
+                    }
 
                     // Wait for one of the tasks to complete.
                     Trace.Info("Waiting for the job to complete or for a cancel message from the channel.");
@@ -105,8 +158,25 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     }
 
                     // Otherwise a message was received from the channel.
-                    channelMessage = await channelTask;
-                    Trace.Info("Control message received from listener [Type:{0}, Iteration:{1}]", channelMessage.MessageType, messageLoopIteration);
+                    try
+                    {
+                        channelMessage = await channelTask;
+                        Trace.Info("Control message received from listener [Type:{0}, Iteration:{1}]", channelMessage.MessageType, messageLoopIteration);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // The channel receive was canceled (likely due to token source cancel), check state and continue.
+                        Trace.Info("Channel receive canceled.");
+                        continue;
+                    }
+                    catch (Exception ex)
+                    {
+                        Trace.Error($"Error receiving message from channel: {ex.Message}");
+                        Trace.Error(ex);
+                        cancel = true;
+                        jobRequestCancellationToken.Cancel();
+                        continue;
+                    }
                     switch (channelMessage.MessageType)
                     {
                         case MessageType.CancelRequest:
@@ -126,9 +196,15 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                             break;
                         case MessageType.JobMetadataUpdate:
                             Trace.Info("Metadata update message received - updating job runner metadata, Metadata: {0}", channelMessage.Body);
-                            var metadataMessage = JsonUtility.FromString<JobMetadataMessage>(channelMessage.Body);
-                            jobRunner.UpdateMetadata(metadataMessage);
-                            Trace.Info("Job metadata update processed successfully");
+                            try
+                            {
+                                var metadataMessage = JsonUtility.FromString<JobMetadataMessage>(channelMessage.Body);
+                                jobRunner.UpdateMetadata(metadataMessage);
+                            }
+                            catch (Exception ex)
+                            {
+                                Trace.Warning($"Failed to process JobMetadataUpdate: {ex.Message}");
+                            }
                             break;
                         default:
                             throw new ArgumentOutOfRangeException(nameof(channelMessage.MessageType), channelMessage.MessageType, nameof(channelMessage.MessageType));

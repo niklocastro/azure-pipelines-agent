@@ -543,8 +543,24 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     return false;
                 }
             }
-            catch
+            catch (UnauthorizedAccessException uaEx)
             {
+                Trace.Info($"Access denied reading firewall registry settings: {uaEx.Message}");
+                return false;
+            }
+            catch (SecurityException secEx)
+            {
+                Trace.Info($"Security error reading firewall registry settings: {secEx.Message}");
+                return false;
+            }
+            catch (ObjectDisposedException odeEx)
+            {
+                Trace.Info($"Registry key disposed while reading firewall settings: {odeEx.Message}");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Trace.Info($"Unexpected error reading firewall registry settings: {ex.Message}");
                 return false;
             }
         }

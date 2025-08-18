@@ -602,13 +602,21 @@ namespace Agent.Plugins.Repository
                 };
                 string arguments = FormatArgumentsWithDefaults(args);
                 _context.Command($@"{_svn} {arguments}");
-                await processInvoker.ExecuteAsync(
-                    workingDirectory: _context.Variables.GetValueOrDefault("agent.workfolder")?.Value,
-                    fileName: _svn,
-                    arguments: arguments,
-                    environment: null,
-                    requireExitCodeZero: true,
-                    cancellationToken: _cancellationToken);
+                try
+                {
+                    await processInvoker.ExecuteAsync(
+                        workingDirectory: _context.Variables.GetValueOrDefault("agent.workfolder")?.Value,
+                        fileName: _svn,
+                        arguments: arguments,
+                        environment: null,
+                        requireExitCodeZero: true,
+                        cancellationToken: _cancellationToken);
+                }
+                catch (System.ComponentModel.Win32Exception w32)
+                {
+                    _context.Error($"Failed to start svn process. Error: {w32.Message} (NativeErrorCode={w32.NativeErrorCode})");
+                    throw;
+                }
             }
         }
 
@@ -651,6 +659,11 @@ namespace Agent.Plugins.Repository
                         environment: null,
                         requireExitCodeZero: true,
                         cancellationToken: _cancellationToken);
+                }
+                catch (System.ComponentModel.Win32Exception w32)
+                {
+                    _context.Error($"Failed to start svn process. Error: {w32.Message} (NativeErrorCode={w32.NativeErrorCode})");
+                    throw;
                 }
                 catch (ProcessExitCodeException)
                 {

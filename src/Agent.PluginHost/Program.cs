@@ -50,7 +50,17 @@ namespace Agent.PluginHost
                     string serializedContext = Console.ReadLine();
                     ArgUtil.NotNullOrEmpty(serializedContext, nameof(serializedContext));
 
-                    AgentTaskPluginExecutionContext executionContext = StringUtil.ConvertFromJson<AgentTaskPluginExecutionContext>(serializedContext);
+                    AgentTaskPluginExecutionContext executionContext = null;
+                    try
+                    {
+                        executionContext = StringUtil.ConvertFromJson<AgentTaskPluginExecutionContext>(serializedContext);
+                    }
+                    catch (Exception jsonEx)
+                    {
+                        // Malformed JSON or unexpected payload
+                        Console.Error.WriteLine($"Failed to parse task plugin context: {jsonEx.Message}");
+                        return 1;
+                    }
                     ArgUtil.NotNull(executionContext, nameof(executionContext));
 
                     VariableValue culture;
@@ -63,20 +73,43 @@ namespace Agent.PluginHost
                     }
 
                     AssemblyLoadContext.Default.Resolving += ResolveAssembly;
+                    IAgentTaskPlugin taskPlugin = null;
                     try
                     {
                         Type type = Type.GetType(assemblyQualifiedName, throwOnError: true);
-                        var taskPlugin = Activator.CreateInstance(type) as IAgentTaskPlugin;
+                        taskPlugin = Activator.CreateInstance(type) as IAgentTaskPlugin;
                         ArgUtil.NotNull(taskPlugin, nameof(taskPlugin));
                         taskPlugin.RunAsync(executionContext, tokenSource.Token).GetAwaiter().GetResult();
                     }
+                    catch (OperationCanceledException oce)
+                    {
+                        // Treat cancellation as a graceful completion
+                        executionContext?.Debug($"Task plugin cancelled: {oce.Message}");
+                    }
                     catch (SocketException ex)
                     {
-                        ExceptionsUtil.HandleSocketException(ex, executionContext.VssConnection.Uri.ToString(), executionContext.Error);
+                        string url = executionContext?.VssConnection?.Uri?.ToString() ?? string.Empty;
+                        ExceptionsUtil.HandleSocketException(ex, url, executionContext.Error);
                     }
                     catch (AggregateException ex)
                     {
-                        ExceptionsUtil.HandleAggregateException((AggregateException)ex, executionContext.Error);
+                        ExceptionsUtil.HandleAggregateException(ex, executionContext.Error);
+                    }
+                    catch (TypeLoadException tle)
+                    {
+                        executionContext.Error($"Unable to load task plugin type '{assemblyQualifiedName}': {tle.Message}");
+                    }
+                    catch (BadImageFormatException bife)
+                    {
+                        executionContext.Error($"Invalid assembly image for task plugin type '{assemblyQualifiedName}': {bife.Message}");
+                    }
+                    catch (FileLoadException fle)
+                    {
+                        executionContext.Error($"Failed to load plugin assembly: {fle.Message}");
+                    }
+                    catch (ReflectionTypeLoadException rtle)
+                    {
+                        executionContext.Error($"Failed to load types from plugin assembly: {rtle.Message}");
                     }
                     catch (Exception ex)
                     {
@@ -86,6 +119,19 @@ namespace Agent.PluginHost
                     finally
                     {
                         AssemblyLoadContext.Default.Resolving -= ResolveAssembly;
+                        
+                        // Ensure plugin resources are cleaned up
+                        try
+                        {
+                            if (taskPlugin is IDisposable disposablePlugin)
+                            {
+                                disposablePlugin.Dispose();
+                            }
+                        }
+                        catch (Exception disposeEx)
+                        {
+                            executionContext?.Debug($"Error disposing plugin: {disposeEx.Message}");
+                        }
                     }
 
                     return 0;
@@ -98,7 +144,16 @@ namespace Agent.PluginHost
                     string serializedContext = Console.ReadLine();
                     ArgUtil.NotNullOrEmpty(serializedContext, nameof(serializedContext));
 
-                    AgentCommandPluginExecutionContext executionContext = StringUtil.ConvertFromJson<AgentCommandPluginExecutionContext>(serializedContext);
+                    AgentCommandPluginExecutionContext executionContext = null;
+                    try
+                    {
+                        executionContext = StringUtil.ConvertFromJson<AgentCommandPluginExecutionContext>(serializedContext);
+                    }
+                    catch (Exception jsonEx)
+                    {
+                        Console.Error.WriteLine($"Failed to parse command plugin context: {jsonEx.Message}");
+                        return 1;
+                    }
                     ArgUtil.NotNull(executionContext, nameof(executionContext));
 
                     AssemblyLoadContext.Default.Resolving += ResolveAssembly;
@@ -108,6 +163,30 @@ namespace Agent.PluginHost
                         var commandPlugin = Activator.CreateInstance(type) as IAgentCommandPlugin;
                         ArgUtil.NotNull(commandPlugin, nameof(commandPlugin));
                         commandPlugin.ProcessCommandAsync(executionContext, tokenSource.Token).GetAwaiter().GetResult();
+                    }
+                    catch (OperationCanceledException oce)
+                    {
+                        // Treat cancellation as a graceful completion
+                        executionContext?.Debug($"Command plugin cancelled: {oce.Message}");
+                    }
+                    catch (SocketException sex)
+                    {
+                        string url = executionContext?.VssConnection?.Uri?.ToString() ?? string.Empty;
+                        ExceptionsUtil.HandleSocketException(sex, url, executionContext.Error);
+                    }
+                    catch (AggregateException aex)
+                    {
+                        ExceptionsUtil.HandleAggregateException(aex, executionContext.Error);
+                    }
+                    catch (TypeLoadException tle)
+                    {
+                        executionContext.Error($"Unable to load command plugin type '{assemblyQualifiedName}': {tle.Message}");
+                        executionContext.Debug(tle.ToString());
+                    }
+                    catch (BadImageFormatException bife)
+                    {
+                        executionContext.Error($"Invalid assembly image for command plugin type '{assemblyQualifiedName}': {bife.Message}");
+                        executionContext.Debug(bife.ToString());
                     }
                     catch (Exception ex)
                     {

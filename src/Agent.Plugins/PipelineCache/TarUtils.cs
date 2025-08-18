@@ -11,6 +11,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Agent.Sdk;
 using BuildXL.Cache.ContentStore.Hashing;
+using Microsoft.VisualStudio.Services.Agent;
 using Microsoft.VisualStudio.Services.BlobStore.WebApi;
 
 namespace Agent.Plugins.PipelineCache
@@ -44,7 +45,7 @@ namespace Agent.Plugins.PipelineCache
             Action actionOnFailure = () =>
             {
                 // Delete archive file.
-                TryDeleteFile(archiveFile);
+                TryDeleteFile(context, archiveFile);
             };
 
             await RunProcessAsync(
@@ -74,7 +75,18 @@ namespace Agent.Plugins.PipelineCache
         {
             ValidateTarManifest(manifest);
 
-            Directory.CreateDirectory(targetDirectory);
+            try
+            {
+                Directory.CreateDirectory(targetDirectory);
+            }
+            catch (UnauthorizedAccessException uaEx)
+            {
+                throw new InvalidOperationException($"Access denied creating target directory '{targetDirectory}': {uaEx.Message}", uaEx);
+            }
+            catch (IOException ioEx)
+            {
+                throw new InvalidOperationException($"I/O error creating target directory '{targetDirectory}': {ioEx.Message}", ioEx);
+            }
 
             DedupIdentifier dedupId = DedupIdentifier.Create(manifest.Items.Single(i => i.Path.EndsWith(archive, StringComparison.OrdinalIgnoreCase)).Blob.Id);
 
@@ -227,7 +239,7 @@ namespace Agent.Plugins.PipelineCache
             }
         }
 
-        private static void TryDeleteFile(string fileName)
+        private static void TryDeleteFile(AgentTaskPluginExecutionContext context, string fileName)
         {
             try
             {
@@ -236,7 +248,11 @@ namespace Agent.Plugins.PipelineCache
                     File.Delete(fileName);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                // Don't fail the operation on cleanup; surface a warning with details.
+                context.Warning($"[TarCleanup] failed to delete file path='{fileName}': {ex}");
+            }
         }
 
         private static string CreateArchiveFileName()

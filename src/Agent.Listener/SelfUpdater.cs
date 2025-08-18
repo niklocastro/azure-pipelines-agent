@@ -7,9 +7,7 @@ using Agent.Sdk.Util;
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
 using Microsoft.VisualStudio.Services.Agent.Listener.Configuration;
 using Microsoft.VisualStudio.Services.Agent.Util;
-using Microsoft.VisualStudio.Services.Common;
 using Microsoft.VisualStudio.Services.WebApi;
-using Newtonsoft.Json;
 using System;
 using System.Diagnostics;
 using System.IO;
@@ -19,6 +17,7 @@ using System.Net.Http;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.VisualStudio.Services.Common;
 
 namespace Microsoft.VisualStudio.Services.Agent.Listener
 {
@@ -284,7 +283,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
                     // Allow a 15-minute package download timeout, which is good enough to update the agent from a 1 Mbit/s ADSL connection.
                     var timeoutSeconds = AgentKnobs.AgentDownloadTimeout.GetValue(_knobContext).AsInt();
 
-                    Trace.Info($"Attempt {attempt}: save latest agent into {archiveFile}.");
+                    var backoffSec = Math.Min(30, attempt * 5);
+                    Trace.Info($"Attempt {attempt}/{Constants.AgentDownloadRetryMaxAttempts}: save latest agent into {archiveFile} (timeout={timeoutSeconds}s, nextBackoff={backoffSec}s).");
 
                     using (var downloadTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds)))
                     using (var downloadCts = CancellationTokenSource.CreateLinkedTokenSource(downloadTimeout.Token, token))

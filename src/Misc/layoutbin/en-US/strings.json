@@ -605,6 +605,7 @@
   "ServerTarpitUrl": "Link to resource utilization page (global 1-hour view): {0}.",
   "ServerTarpitUrlScoped": "Link to resource utilization page (1-hour view by pipeline): {0}.",
   "ServerUrl": "server URL",
+  "ServerUrlInvalid": "The server URL provided is invalid. Please check the URL and try again.",
   "ServiceAlreadyExists": "The service already exists: {0}, it will be replaced",
   "ServiceConfigured": "Service {0} successfully configured",
   "ServiceDelayedStartOptionSet": "Service {0} successfully set to delayed auto start",
@@ -655,6 +656,7 @@
   "TaskDownloadTimeout": "Task '{0}' didn't finish download within {1} seconds.",
   "TaskSignatureVerificationFailed": "Task signature verification failed.",
   "TaskSignatureVerificationSucceeeded": "Task signature verification successful.",
+  "TaskVerificationError": "Task verification failed. Error: {0}",
   "TeeEula": [
     "Building sources from a TFVC repository requires accepting the Team Explorer Everywhere End User License Agreement. This step is not required for building sources from Git repositories.",
     "",

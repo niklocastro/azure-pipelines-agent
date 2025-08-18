@@ -43,15 +43,35 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             set => _jobServerQueue = value;
         }
 
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Maintainability", "CA1505:AvoidUnmaintainableCode", Justification = "Complexity is required for job orchestration; refactor would reduce clarity.")]
         public async Task<TaskResult> RunAsync(Pipelines.AgentJobRequestMessage message, CancellationToken jobRequestCancellationToken)
         {
             // Validate parameters.
             Trace.Entering();
-            ArgUtil.NotNull(message, nameof(message));
-            ArgUtil.NotNull(message.Resources, nameof(message.Resources));
-            ArgUtil.NotNull(message.Variables, nameof(message.Variables));
-            ArgUtil.NotNull(message.Steps, nameof(message.Steps));
-            Trace.Entering();
+            Trace.Info("Job ID {0}", message.JobId);
+            try
+            {
+                ArgUtil.NotNull(message, nameof(message));
+                ArgUtil.NotNull(message.Resources, nameof(message.Resources));
+                ArgUtil.NotNull(message.Variables, nameof(message.Variables));
+                ArgUtil.NotNull(message.Steps, nameof(message.Steps));
+                Trace.Entering();
+                Trace.Info("Job ID {0}", message.JobId);
+
+                if (message.JobId == Guid.Empty)
+                {
+                    Trace.Error("Job request message missing or invalid JobId (Guid.Empty).");
+                    return TaskResult.Failed;
+                }
+
+                Trace.Info($"Job ID {message.JobId}");
+            }
+            catch (Exception ex)
+            {
+                Trace.Error($"Failed to validate job request message: {ex.Message}");
+                Trace.Error(ex);
+                return TaskResult.Failed;
+            }
 
             DateTime jobStartTimeUtc = DateTime.UtcNow;
 
@@ -86,14 +106,27 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             Trace.Info("Creating job server connection [URL:{0}]", jobServerUrl);
             // jobServerQueue is the throttling reporter.
             _jobServerQueue = HostContext.GetService<IJobServerQueue>();
-            VssConnection jobConnection = VssUtil.CreateConnection(
-                jobServerUrl,
-                jobServerCredential,
-                Trace,
-                skipServerCertificateValidation,
-                new DelegatingHandler[] { new ThrottlingReportHandler(_jobServerQueue) }
-            );
-            await jobServer.ConnectAsync(jobConnection);
+            VssConnection jobConnection = null;
+            try
+            {
+                jobConnection = VssUtil.CreateConnection(
+                    jobServerUrl,
+                    jobServerCredential,
+                    Trace,
+                    skipServerCertificateValidation,
+                    new DelegatingHandler[] { new ThrottlingReportHandler(_jobServerQueue) }
+                );
+                await jobServer.ConnectAsync(jobConnection);
+            }
+            catch (Exception ex)
+            {
+                Trace.Error($"Failed to connect job server at '{jobServerUrl}': {ex.Message}");
+                Trace.Error(ex);
+                // Ensure we don't leak a connection created before connect failed
+                jobConnection?.Dispose();
+                jobConnection = null;
+                return TaskResult.Failed;
+            }
 
             _jobServerQueue.Start(message);
             HostContext.WritePerfCounter($"WorkerJobServerQueueStarted_{message.RequestId.ToString()}");
@@ -107,8 +140,21 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             try
             {
                 // Create the job execution context.
-                jobContext = HostContext.CreateService<IExecutionContext>();
-                jobContext.InitializeJob(message, jobRequestCancellationToken);
+                try
+                {
+                    jobContext = HostContext.CreateService<IExecutionContext>();
+                    if (jobContext == null)
+                    {
+                        throw new InvalidOperationException("Failed to create job execution context");
+                    }
+                    jobContext.InitializeJob(message, jobRequestCancellationToken);
+                }
+                catch (Exception initEx)
+                {
+                    Trace.Error($"Failed to initialize job context: {initEx.Message}");
+                    Trace.Error(initEx);
+                    return TaskResult.Failed;
+                }
 
                 jobContext.Start();
                 jobContext.Section(StringUtil.Loc("StepStarting", message.JobDisplayName));
@@ -132,31 +178,38 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     }
                 }
 
-                agentShutdownRegistration = HostContext.AgentShutdownToken.Register(() =>
+                try
                 {
-                    // log an issue, then agent get shutdown by Ctrl-C or Ctrl-Break.
-                    // the server will use Ctrl-Break to tells the agent that operating system is shutting down.
-                    string errorMessage;
-                    switch (HostContext.AgentShutdownReason)
+                    agentShutdownRegistration = HostContext.AgentShutdownToken.Register(() =>
                     {
-                        case ShutdownReason.UserCancelled:
-                            errorMessage = StringUtil.Loc("UserShutdownAgent");
-                            Trace.Warning("Agent shutdown initiated [Reason:UserCancelled, JobId:{0}]", message.JobId);
-                            break;
-                        case ShutdownReason.OperatingSystemShutdown:
-                            errorMessage = StringUtil.Loc("OperatingSystemShutdown", Environment.MachineName);
-                            Trace.Warning("Agent shutdown initiated [Reason:OperatingSystemShutdown, JobId:{0}, Machine:{1}]", message.JobId, Environment.MachineName);
-                            break;
-                        default:
-                            Trace.Error("Unknown shutdown reason detected [Reason:{0}, JobId:{1}]", HostContext.AgentShutdownReason, message.JobId);
-                            throw new ArgumentException(HostContext.AgentShutdownReason.ToString(), nameof(HostContext.AgentShutdownReason));
-                    }
-                    jobContext.AddIssue(new Issue() { Type = IssueType.Error, Message = errorMessage });
-                });
+                        // log an issue, then agent get shutdown by Ctrl-C or Ctrl-Break.
+                        // the server will use Ctrl-Break to tells the agent that operating system is shutting down.
+                        string errorMessage;
+                        switch (HostContext.AgentShutdownReason)
+                        {
+                            case ShutdownReason.UserCancelled:
+                                errorMessage = StringUtil.Loc("UserShutdownAgent");
+                                Trace.Warning("Agent shutdown initiated [Reason:UserCancelled, JobId:{0}]", message.JobId);
+                                break;
+                            case ShutdownReason.OperatingSystemShutdown:
+                                errorMessage = StringUtil.Loc("OperatingSystemShutdown", Environment.MachineName);
+                                Trace.Warning("Agent shutdown initiated [Reason:OperatingSystemShutdown, JobId:{0}, Machine:{1}]", message.JobId, Environment.MachineName);
+                                break;
+                            default:
+                                Trace.Error("Unknown shutdown reason detected [Reason:{0}, JobId:{1}]", HostContext.AgentShutdownReason, message.JobId);
+                                throw new ArgumentException(HostContext.AgentShutdownReason.ToString(), nameof(HostContext.AgentShutdownReason));
+                        }
+                        jobContext.AddIssue(new Issue() { Type = IssueType.Error, Message = errorMessage });
+                    });
+                }
+                catch (Exception regEx)
+                {
+                    Trace.Warning($"Failed to register agent shutdown callback: {regEx.Message}");
+                }
 
                 // Validate directory permissions.
                 string workDirectory = HostContext.GetDirectory(WellKnownDirectory.Work);
-                Trace.Info($"Validating directory permissions for: '{workDirectory}'");
+                Trace.Info($"[PrepareDirectory] op=mkdir+validate path='{workDirectory}' jobId={message.JobId} requestId={message.RequestId}");
                 try
                 {
                     Directory.CreateDirectory(workDirectory);
@@ -165,6 +218,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 }
                 catch (Exception ex)
                 {
+                    Trace.Error($"[PrepareDirectory] failed path='{workDirectory}' error='{ex.Message}'");
                     Trace.Error(ex);
                     jobContext.Error(ex);
                     return await CompleteJobAsync(jobServer, jobContext, message, TaskResult.Failed);
@@ -211,7 +265,19 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 jobContext.AsyncCommands.Add(dockerDetectCommand);
 
                 string toolsDirectory = HostContext.GetDirectory(WellKnownDirectory.Tools);
-                Directory.CreateDirectory(toolsDirectory);
+                Trace.Info($"[PrepareDirectory] op=mkdir path='{toolsDirectory}' jobId={message.JobId} requestId={message.RequestId}");
+                try
+                {
+                    Directory.CreateDirectory(toolsDirectory);
+                    Trace.Info($"[PrepareDirectory] ok path='{toolsDirectory}'");
+                }
+                catch (Exception ex)
+                {
+                    Trace.Error($"[PrepareDirectory] failed path='{toolsDirectory}' error='{ex.Message}'");
+                    Trace.Error(ex);
+                    jobContext.Error(ex);
+                    return await CompleteJobAsync(jobServer, jobContext, message, TaskResult.Failed);
+                }
                 jobContext.SetVariable(Constants.Variables.Agent.ToolsDirectory, toolsDirectory, isFilePath: true);
                 Trace.Info("Tools directory initialized [Path:{0}]", toolsDirectory);
 
@@ -222,88 +288,203 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
                 // Setup TEMP directories
                 _tempDirectoryManager = HostContext.GetService<ITempDirectoryManager>();
-                _tempDirectoryManager.InitializeTempDirectory(jobContext);
-                Trace.Info("Temporary directory manager initialized - TEMP directories configured for job execution");
+                Trace.Info($"[PrepareDirectory] op=init-temp jobId={message.JobId} requestId={message.RequestId}");
+                try
+                {
+                    _tempDirectoryManager.InitializeTempDirectory(jobContext);
+                    Trace.Info("Temporary directory manager initialized - TEMP directories configured for job execution");
+                }
+                catch (Exception ex)
+                {
+                    Trace.Error($"[PrepareDirectory] temp init failed error='{ex.Message}'");
+                    Trace.Error(ex);
+                    jobContext.Error(ex);
+                    return await CompleteJobAsync(jobServer, jobContext, message, TaskResult.Failed);
+                }
 
-                // todo: task server can throw. try/catch and fail job gracefully.
-                // prefer task definitions url, then TFS collection url, then TFS account url
-                Trace.Info("TaskServer connection setup initiated - establishing connection for task definitions");
+                // Task server connection with validation and error handling.
                 var taskServer = HostContext.GetService<ITaskServer>();
-                Uri taskServerUri = null;
-                if (!string.IsNullOrEmpty(jobContext.Variables.System_TaskDefinitionsUri))
+                try
                 {
-                    taskServerUri = new Uri(jobContext.Variables.System_TaskDefinitionsUri);
-                }
-                else if (!string.IsNullOrEmpty(jobContext.Variables.System_TFCollectionUrl))
-                {
-                    taskServerUri = new Uri(jobContext.Variables.System_TFCollectionUrl);
-                }
-
-                var taskServerCredential = VssUtil.GetVssCredential(systemConnection);
-                if (taskServerUri != null)
-                {
-                    Trace.Info("Creating task server [URI:{0}]", taskServerUri);
-
-                    taskConnection = VssUtil.CreateConnection(taskServerUri, taskServerCredential, Trace, skipServerCertificateValidation);
-                    await taskServer.ConnectAsync(taskConnection);
-                    Trace.Info($"TaskServer connection established successfully [URI: {taskServerUri}]");
-                }
-
-                // for back compat TFS 2015 RTM/QU1, we may need to switch the task server url to agent config url
-                if (!string.Equals(message?.Variables.GetValueOrDefault(Constants.Variables.System.ServerType)?.Value, "Hosted", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (taskServerUri == null || !await taskServer.TaskDefinitionEndpointExist())
+                    Uri taskServerUri = null;
+                    var taskDefinitionsUri = jobContext.Variables.System_TaskDefinitionsUri;
+                    var collectionUri = jobContext.Variables.System_TFCollectionUrl;
+                    if (!string.IsNullOrEmpty(taskDefinitionsUri))
                     {
-                        Trace.Info($"Can't determine task download url from JobMessage or the endpoint doesn't exist.");
-                        var configStore = HostContext.GetService<IConfigurationStore>();
-                        taskServerUri = new Uri(configStore.GetSettings().ServerUrl);
-
-                        Trace.Info($"Recreate task server with configuration server url: {taskServerUri}");
-                        legacyTaskConnection = VssUtil.CreateConnection(taskServerUri, taskServerCredential, trace: Trace, skipServerCertificateValidation);
-                        await taskServer.ConnectAsync(legacyTaskConnection);
-                        Trace.Info($"Legacy TaskServer connection established successfully - [URI: {taskServerUri}]");
+                        if (!Uri.TryCreate(taskDefinitionsUri, UriKind.Absolute, out taskServerUri))
+                        {
+                            throw new ArgumentException($"Invalid task definitions URI: {taskDefinitionsUri}");
+                        }
                     }
-                }
-
-                // Expand the endpoint data values.
-                foreach (ServiceEndpoint endpoint in jobContext.Endpoints)
-                {
-                    jobContext.Variables.ExpandValues(target: endpoint.Data);
-                    VarUtil.ExpandEnvironmentVariables(HostContext, target: endpoint.Data);
-                }
-                Trace.Info($"Endpoint data expansion completed for {jobContext.Endpoints?.Count ?? 0} endpoints");
-
-                // Expand the repository property values.
-                foreach (var repository in jobContext.Repositories)
-                {
-                    // expand checkout option
-                    var checkoutOptions = repository.Properties.Get<JToken>(Pipelines.RepositoryPropertyNames.CheckoutOptions);
-                    if (checkoutOptions != null)
+                    else if (!string.IsNullOrEmpty(collectionUri))
                     {
-                        checkoutOptions = jobContext.Variables.ExpandValues(target: checkoutOptions);
-                        checkoutOptions = VarUtil.ExpandEnvironmentVariables(HostContext, target: checkoutOptions);
-                        repository.Properties.Set<JToken>(Pipelines.RepositoryPropertyNames.CheckoutOptions, checkoutOptions);
+                        if (!Uri.TryCreate(collectionUri, UriKind.Absolute, out taskServerUri))
+                        {
+                            throw new ArgumentException($"Invalid TF collection URI: {collectionUri}");
+                        }
                     }
 
-                    // expand workspace mapping
-                    var mappings = repository.Properties.Get<JToken>(Pipelines.RepositoryPropertyNames.Mappings);
-                    if (mappings != null)
+                    var taskServerCredential = VssUtil.GetVssCredential(systemConnection);
+                    if (taskServerUri != null)
                     {
-                        mappings = jobContext.Variables.ExpandValues(target: mappings);
-                        mappings = VarUtil.ExpandEnvironmentVariables(HostContext, target: mappings);
-                        repository.Properties.Set<JToken>(Pipelines.RepositoryPropertyNames.Mappings, mappings);
+                        Trace.Info($"Creating task server with {taskServerUri}");
+                        taskConnection = VssUtil.CreateConnection(taskServerUri, taskServerCredential, Trace, skipServerCertificateValidation);
+
+                        // Timeout wrapper for connect
+                        var connectTask = taskServer.ConnectAsync(taskConnection);
+                        var completed = await Task.WhenAny(connectTask, Task.Delay(TimeSpan.FromMinutes(2), jobContext.CancellationToken)) == connectTask;
+                        if (!completed)
+                        {
+                            throw new OperationCanceledException("Task server connection timed out.");
+                        }
+                        await connectTask; // propagate any exception
                     }
+
+                    // For back compat TFS 2015, fallback to config URL if endpoint missing
+                    if (!string.Equals(message?.Variables.GetValueOrDefault(Constants.Variables.System.ServerType)?.Value, "Hosted", StringComparison.OrdinalIgnoreCase))
+                    {
+                        bool endpointExists = false;
+                        try
+                        {
+                            endpointExists = (taskServerUri != null) && await taskServer.TaskDefinitionEndpointExist();
+                        }
+                        catch (Exception checkEx)
+                        {
+                            Trace.Warning($"Failed to validate task definition endpoint existence: {checkEx.Message}");
+                        }
+
+                        if (taskServerUri == null || !endpointExists)
+                        {
+                            Trace.Info("Can't determine task download url from JobMessage or the endpoint doesn't exist.");
+                            var configStore = HostContext.GetService<IConfigurationStore>();
+                            taskServerUri = new Uri(configStore.GetSettings().ServerUrl);
+
+                            Trace.Info($"Recreate task server with configuration server url: {taskServerUri}");
+                            legacyTaskConnection = VssUtil.CreateConnection(taskServerUri, taskServerCredential, trace: Trace, skipServerCertificateValidation);
+
+                            var legacyConnect = taskServer.ConnectAsync(legacyTaskConnection);
+                            var legacyCompleted = await Task.WhenAny(legacyConnect, Task.Delay(TimeSpan.FromMinutes(2), jobContext.CancellationToken)) == legacyConnect;
+                            if (!legacyCompleted)
+                            {
+                                throw new OperationCanceledException("Legacy task server connection timed out.");
+                            }
+                            await legacyConnect;
+                        }
+                    }
+                }
+                catch (OperationCanceledException oce) when (!jobContext.CancellationToken.IsCancellationRequested)
+                {
+                    Trace.Error($"Task server connection timeout: {oce.Message}");
+                    return await CompleteJobAsync(jobServer, jobContext, message, TaskResult.Failed);
+                }
+                catch (VssServiceException vssEx)
+                {
+                    Trace.Error($"VSS service error connecting to task server: {vssEx.Message}");
+                    Trace.Error(vssEx);
+                    return await CompleteJobAsync(jobServer, jobContext, message, TaskResult.Failed);
+                }
+                catch (Exception ex)
+                {
+                    Trace.Error($"Failed to connect to task server: {ex.Message}");
+                    Trace.Error(ex);
+                    return await CompleteJobAsync(jobServer, jobContext, message, TaskResult.Failed);
+                }
+
+                // Expand the endpoint data values with per-endpoint guards.
+                Trace.Info($"[ExpandValues] scope=endpoints count={jobContext.Endpoints?.Count ?? 0} jobId={message.JobId} requestId={message.RequestId}");
+                try
+                {
+                    foreach (ServiceEndpoint endpoint in jobContext.Endpoints)
+                    {
+                        try
+                        {
+                            if (endpoint?.Data != null)
+                            {
+                                jobContext.Variables.ExpandValues(target: endpoint.Data);
+                                VarUtil.ExpandEnvironmentVariables(HostContext, target: endpoint.Data);
+                            }
+                        }
+                        catch (Exception endpointEx)
+                        {
+                            Trace.Warning($"Failed to expand endpoint data for '{endpoint?.Name}': {endpointEx.Message}");
+                            jobContext.Warning($"Failed to expand variables for endpoint '{endpoint?.Name}'");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Trace.Error($"Critical error during endpoint expansion: {ex.Message}");
+                    Trace.Error(ex);
+                    return await CompleteJobAsync(jobServer, jobContext, message, TaskResult.Failed);
+                }
+
+                // Expand the repository property values with per-repo guards.
+                Trace.Info($"[ExpandValues] scope=repositories count={jobContext.Repositories?.Count ?? 0} jobId={message.JobId} requestId={message.RequestId}");
+                try
+                {
+                    foreach (var repository in jobContext.Repositories)
+                    {
+                        try
+                        {
+                            // expand checkout option
+                            var checkoutOptions = repository.Properties.Get<JToken>(Pipelines.RepositoryPropertyNames.CheckoutOptions);
+                            if (checkoutOptions != null)
+                            {
+                                checkoutOptions = jobContext.Variables.ExpandValues(target: checkoutOptions);
+                                checkoutOptions = VarUtil.ExpandEnvironmentVariables(HostContext, target: checkoutOptions);
+                                repository.Properties.Set<JToken>(Pipelines.RepositoryPropertyNames.CheckoutOptions, checkoutOptions);
+                            }
+
+                            // expand workspace mapping
+                            var mappings = repository.Properties.Get<JToken>(Pipelines.RepositoryPropertyNames.Mappings);
+                            if (mappings != null)
+                            {
+                                mappings = jobContext.Variables.ExpandValues(target: mappings);
+                                mappings = VarUtil.ExpandEnvironmentVariables(HostContext, target: mappings);
+                                repository.Properties.Set<JToken>(Pipelines.RepositoryPropertyNames.Mappings, mappings);
+                            }
+                        }
+                        catch (Exception repoEx)
+                        {
+                            Trace.Warning($"Failed to expand repository properties: {repoEx.Message}");
+                            jobContext.Warning("Failed to expand variables for repository properties");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Trace.Error($"Critical error during repository expansion: {ex.Message}");
+                    Trace.Error(ex);
+                    return await CompleteJobAsync(jobServer, jobContext, message, TaskResult.Failed);
                 }
                 Trace.Info($"Repository property expansion completed for {jobContext.Repositories?.Count ?? 0} repositories");
 
                 // Expand container properties
+                Trace.Info($"[ExpandValues] scope=containers count={jobContext.Containers?.Count ?? 0} jobId={message.JobId} requestId={message.RequestId}");
                 foreach (var container in jobContext.Containers)
                 {
-                    this.ExpandProperties(container, jobContext.Variables);
+                    try
+                    {
+                        this.ExpandProperties(container, jobContext.Variables);
+                    }
+                    catch (Exception containerEx)
+                    {
+                        Trace.Warning($"Failed to expand container properties for '{container?.ContainerDisplayName}': {containerEx.Message}");
+                        jobContext.Warning($"Failed to expand variables for container: {container?.ContainerDisplayName}");
+                    }
                 }
+                Trace.Info($"[ExpandValues] scope=sidecars count={jobContext.SidecarContainers?.Count ?? 0} jobId={message.JobId} requestId={message.RequestId}");
                 foreach (var sidecar in jobContext.SidecarContainers)
                 {
-                    this.ExpandProperties(sidecar, jobContext.Variables);
+                    try
+                    {
+                        this.ExpandProperties(sidecar, jobContext.Variables);
+                    }
+                    catch (Exception sidecarEx)
+                    {
+                        Trace.Warning($"Failed to expand sidecar properties for '{sidecar?.ContainerDisplayName}': {sidecarEx.Message}");
+                        jobContext.Warning($"Failed to expand variables for sidecar: {sidecar?.ContainerDisplayName}");
+                    }
                 }
                 Trace.Info($"Container property expansion completed - Containers: {jobContext.Containers?.Count ?? 0}, Sidecars: {jobContext.SidecarContainers?.Count ?? 0}");
 
@@ -311,26 +492,39 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 var isSelfHosted = StringUtil.ConvertToBoolean(jobContext.Variables.Get(Constants.Variables.Agent.IsSelfHosted));
                 if (PlatformUtil.RunningOnWindows && isSelfHosted)
                 {
-                    Trace.Info("Initiating Windows preinstalled Git telemetry collection for self-hosted agent");
-                    var windowsPreinstalledGitCommand = jobContext.GetHostContext().GetService<IAsyncCommandContext>();
-                    windowsPreinstalledGitCommand.InitializeCommandContext(jobContext, Constants.AsyncExecution.Commands.Names.WindowsPreinstalledGitTelemetry);
-                    windowsPreinstalledGitCommand.Task = Task.Run(() =>
+                    try
                     {
-                        var hasPreinstalledGit = false;
-
-                        var filePath = WhichUtil.Which("git.exe", require: false, trace: null);
-                        if (!string.IsNullOrEmpty(filePath))
+                        Trace.Info("Initiating Windows preinstalled Git telemetry collection for self-hosted agent");
+                        var windowsPreinstalledGitCommand = jobContext.GetHostContext().GetService<IAsyncCommandContext>();
+                        windowsPreinstalledGitCommand.InitializeCommandContext(jobContext, Constants.AsyncExecution.Commands.Names.WindowsPreinstalledGitTelemetry);
+                        windowsPreinstalledGitCommand.Task = Task.Run(() =>
                         {
-                            hasPreinstalledGit = true;
-                        }
+                            try
+                            {
+                                var hasPreinstalledGit = false;
+                                var filePath = WhichUtil.Which("git.exe", require: false, trace: null);
+                                if (!string.IsNullOrEmpty(filePath))
+                                {
+                                    hasPreinstalledGit = true;
+                                }
 
-                        PublishTelemetry(context: jobContext, area: "PipelinesTasks", feature: "WindowsGitTelemetry", properties: new Dictionary<string, string>
-                        {
-                            { "hasPreinstalledGit", hasPreinstalledGit.ToString() }
+                                PublishTelemetry(context: jobContext, area: "PipelinesTasks", feature: "WindowsGitTelemetry", properties: new Dictionary<string, string>
+                                {
+                                    { "hasPreinstalledGit", hasPreinstalledGit.ToString() }
+                                });
+                            }
+                            catch (Exception telemetryEx)
+                            {
+                                Trace.Warning($"Failed to collect Windows Git telemetry: {telemetryEx.Message}");
+                            }
                         });
-                    });
 
-                    jobContext.AsyncCommands.Add(windowsPreinstalledGitCommand);
+                        jobContext.AsyncCommands.Add(windowsPreinstalledGitCommand);
+                    }
+                    catch (Exception telemetrySetupEx)
+                    {
+                        Trace.Warning($"Failed to setup Windows Git telemetry: {telemetrySetupEx.Message}");
+                    }
                 }
 
                 // Get the job extension.
@@ -338,18 +532,17 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 var hostType = jobContext.Variables.System_HostType;
                 var extensionManager = HostContext.GetService<IExtensionManager>();
                 // We should always have one job extension
-                IJobExtension jobExtension =
-                    (extensionManager.GetExtensions<IJobExtension>() ?? new List<IJobExtension>())
-                    .Where(x => x.HostType.HasFlag(hostType))
-                    .FirstOrDefault();
+                IJobExtension jobExtension = extensionManager
+                    .GetExtensions<IJobExtension>()
+                    ?.FirstOrDefault(x => x.HostType.HasFlag(hostType));
                 ArgUtil.NotNull(jobExtension, nameof(jobExtension));
                 Trace.Info($"Job extension loaded successfully - HostType: {hostType}, ExtensionType: {jobExtension?.GetType()?.Name}");
                 List<IStep> jobSteps = null;
                 try
                 {
-                    Trace.Info("Job steps initialization initiated - parsing step definitions and resolving task references");
+                    Trace.Info($"[InitializeJob] jobId={message.JobId} requestId={message.RequestId} ext={jobExtension.GetType().Name} starting");
                     jobSteps = await jobExtension.InitializeJob(jobContext, message);
-                    Trace.Info($"Job extension initialization completed successfully");
+                    Trace.Info($"[InitializeJob] jobId={message.JobId} requestId={message.RequestId} ext={jobExtension.GetType().Name} done steps={jobSteps?.Count ?? 0}");
                 }
                 catch (OperationCanceledException ex) when (jobContext.CancellationToken.IsCancellationRequested)
                 {
@@ -365,14 +558,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                             { "TracePoint", "111"},
                         });
 
-                        Trace.Error($"Job is canceled during initialize.");
-                        Trace.Error($"Caught exception: {ex}");
+                        Trace.Error($"[InitializeJob] jobId={message.JobId} requestId={message.RequestId} canceled during initialize (agent shutdown). Message='{ex.Message}'");
+                        Trace.Error(ex);
                         return await CompleteJobAsync(jobServer, jobContext, message, TaskResult.Failed);
                     }
                     else
                     {
-                        Trace.Error($"Job is canceled during initialize.");
-                        Trace.Error($"Caught exception: {ex}");
+                        Trace.Info($"[CANCELLED] op=initializeJob jobId={message.JobId} requestId={message.RequestId} reason=job-cancel msg='{ex.Message}'");
                         return await CompleteJobAsync(jobServer, jobContext, message, TaskResult.Canceled);
                     }
                 }
@@ -380,7 +572,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 {
                     // set the job to failed.
                     // don't log error issue to job ExecutionContext, since server owns the job level issue
-                    Trace.Error($"Job initialize failed.");
+                    Trace.Error($"[InitializeJob] jobId={message.JobId} requestId={message.RequestId} failed. Exception='{ex.Message}'");
                     Trace.Error($"Caught exception from {nameof(jobExtension.InitializeJob)}: {ex}");
                     return await CompleteJobAsync(jobServer, jobContext, message, TaskResult.Failed);
                 }
@@ -411,7 +603,18 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 finally
                 {
                     Trace.Info("Finalize job.");
-                    await jobExtension.FinalizeJob(jobContext);
+                    try
+                    {
+                        await jobExtension.FinalizeJob(jobContext);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Finalization issues should not crash the worker; log and mark job failed conservatively
+                        Trace.Error($"Caught exception from job extension finalize: {ex.Message}");
+                        Trace.Error(ex);
+                        jobContext.Error(ex);
+                        jobContext.Result = TaskResultUtil.MergeTaskResults(jobContext.Result, TaskResult.Failed);
+                    }
                 }
 
                 Trace.Info($"Job result after all job steps finish: {jobContext.Result ?? TaskResult.Succeeded}");
@@ -475,23 +678,33 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             {
                 return;
             }
-            // Expand port mapping
-            variables.ExpandValues(container.UserPortMappings);
-
-            // Expand volume mounts
-            variables.ExpandValues(container.UserMountVolumes);
-            foreach (var volume in container.UserMountVolumes.Values)
+            try
             {
-                // After mount volume variables are expanded, they are final
-                container.MountVolumes.Add(new MountVolume(volume));
+                Trace.Verbose("[ExpandValues] container properties start");
+                // Expand port mapping
+                variables.ExpandValues(container.UserPortMappings);
+
+                // Expand volume mounts
+                variables.ExpandValues(container.UserMountVolumes);
+                foreach (var volume in container.UserMountVolumes.Values)
+                {
+                    // After mount volume variables are expanded, they are final
+                    container.MountVolumes.Add(new MountVolume(volume));
+                }
+
+                // Expand env vars
+                variables.ExpandValues(container.ContainerEnvironmentVariables);
+
+                // Expand image and options strings
+                container.ContainerImage = variables.ExpandValue(nameof(container.ContainerImage), container.ContainerImage);
+                container.ContainerCreateOptions = variables.ExpandValue(nameof(container.ContainerCreateOptions), container.ContainerCreateOptions);
             }
-
-            // Expand env vars
-            variables.ExpandValues(container.ContainerEnvironmentVariables);
-
-            // Expand image and options strings
-            container.ContainerImage = variables.ExpandValue(nameof(container.ContainerImage), container.ContainerImage);
-            container.ContainerCreateOptions = variables.ExpandValue(nameof(container.ContainerCreateOptions), container.ContainerCreateOptions);
+            catch (Exception ex)
+            {
+                Trace.Error($"[ExpandValues] container failed error='{ex.Message}'");
+                Trace.Error(ex);
+                throw;
+            }
         }
 
         private async Task<TaskResult> CompleteJobAsync(IJobServer jobServer, IExecutionContext jobContext, Pipelines.AgentJobRequestMessage message, TaskResult? taskResult = null)
@@ -509,7 +722,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             }
             catch (AggregateException ex)
             {
-                ExceptionsUtil.HandleAggregateException((AggregateException)ex, Trace.Error);
+                ExceptionsUtil.HandleAggregateException(ex, (message) => Trace.Error(message));
 
                 result = TaskResultUtil.MergeTaskResults(result, TaskResult.Failed);
             }
@@ -523,8 +736,17 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             }
 
             // Clean TEMP after finish process jobserverqueue, since there might be a pending fileupload still use the TEMP dir.
-            _tempDirectoryManager?.CleanupTempDirectory();
-            Trace.Info("Resource disposal completed - Temporary directory cleanup finished");
+            try
+            {
+                _tempDirectoryManager?.CleanupTempDirectory();
+                Trace.Info("Resource disposal completed - Temporary directory cleanup finished");
+            }
+            catch (Exception cleanupEx)
+            {
+                // Log cleanup failures as warnings to avoid masking the primary job result
+                Trace.Warning($"[Cleanup] temp cleanup failed: {cleanupEx.Message}");
+                Trace.Warning(cleanupEx.ToString());
+            }
 
             if (!jobContext.Features.HasFlag(PlanFeatures.JobCompletedPlanEvent))
             {

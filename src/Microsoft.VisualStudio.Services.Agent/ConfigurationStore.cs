@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using Microsoft.VisualStudio.Services.Agent.Util;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.Serialization;
@@ -277,7 +278,16 @@ namespace Microsoft.VisualStudio.Services.Agent
         {
             if (_creds == null)
             {
-                _creds = IOUtil.LoadObject<CredentialData>(_credFilePath);
+                try
+                {
+                    _creds = IOUtil.LoadObject<CredentialData>(_credFilePath);
+                }
+                catch (Exception ex)
+                {
+                    Trace.Error($"[IO ERROR] action=read file={_credFilePath} msg={ex.Message}");
+                    Trace.Error(ex);
+                    throw;
+                }
             }
 
             return _creds;
@@ -290,9 +300,18 @@ namespace Microsoft.VisualStudio.Services.Agent
                 AgentSettings configuredSettings = null;
                 if (File.Exists(_configFilePath))
                 {
-                    string json = File.ReadAllText(_configFilePath, Encoding.UTF8);
-                    Trace.Info($"Read setting file: {json.Length} chars");
-                    configuredSettings = StringUtil.ConvertFromJson<AgentSettings>(json);
+                    try
+                    {
+                        string json = File.ReadAllText(_configFilePath, Encoding.UTF8);
+                        Trace.Info($"Read setting file: {json.Length} chars");
+                        configuredSettings = StringUtil.ConvertFromJson<AgentSettings>(json);
+                    }
+                    catch (Exception ex)
+                    {
+                        Trace.Error($"[IO ERROR] action=read file={_configFilePath} msg={ex.Message}");
+                        Trace.Error(ex);
+                        throw;
+                    }
                 }
 
                 ArgUtil.NotNull(configuredSettings, nameof(configuredSettings));
@@ -306,7 +325,16 @@ namespace Microsoft.VisualStudio.Services.Agent
         {
             if (_autoLogonSettings == null)
             {
-                _autoLogonSettings = IOUtil.LoadObject<AutoLogonSettings>(_autoLogonSettingsFilePath);
+                try
+                {
+                    _autoLogonSettings = IOUtil.LoadObject<AutoLogonSettings>(_autoLogonSettingsFilePath);
+                }
+                catch (Exception ex)
+                {
+                    Trace.Error($"[IO ERROR] action=read file={_autoLogonSettingsFilePath} msg={ex.Message}");
+                    Trace.Error(ex);
+                    throw;
+                }
             }
 
             return _autoLogonSettings;
@@ -319,7 +347,16 @@ namespace Microsoft.VisualStudio.Services.Agent
                 if (File.Exists(_setupInfoFilePath))
                 {
                     Trace.Info($"Load machine setup info from {_setupInfoFilePath}");
-                    _setupInfo = IOUtil.LoadObject<List<SetupInfo>>(_setupInfoFilePath);
+                    try
+                    {
+                        _setupInfo = IOUtil.LoadObject<List<SetupInfo>>(_setupInfoFilePath);
+                    }
+                    catch (Exception ex)
+                    {
+                        Trace.Error($"[IO ERROR] action=read file={_setupInfoFilePath} msg={ex.Message}");
+                        Trace.Error(ex);
+                        throw;
+                    }
                 }
                 else
                 {
@@ -338,12 +375,39 @@ namespace Microsoft.VisualStudio.Services.Agent
             {
                 // Delete existing credential file first, since the file is hidden and not able to overwrite.
                 Trace.Info("Delete exist agent credential file.");
-                IOUtil.DeleteFile(_credFilePath);
+                try
+                {
+                    IOUtil.DeleteFile(_credFilePath);
+                }
+                catch (Exception ex)
+                {
+                    Trace.Error($"[IO ERROR] action=delete file={_credFilePath} msg={ex.Message}");
+                    Trace.Error(ex);
+                    throw;
+                }
             }
 
-            IOUtil.SaveObject(credential, _credFilePath);
+            try
+            {
+                IOUtil.SaveObject(credential, _credFilePath);
+            }
+            catch (Exception ex)
+            {
+                Trace.Error($"[IO ERROR] action=write file={_credFilePath} msg={ex.Message}");
+                Trace.Error(ex);
+                throw;
+            }
             Trace.Info("Credentials Saved.");
-            File.SetAttributes(_credFilePath, File.GetAttributes(_credFilePath) | FileAttributes.Hidden);
+            try
+            {
+                File.SetAttributes(_credFilePath, File.GetAttributes(_credFilePath) | FileAttributes.Hidden);
+            }
+            catch (Exception ex)
+            {
+                Trace.Error($"[IO ERROR] action=set-attributes file={_credFilePath} msg={ex.Message}");
+                Trace.Error(ex);
+                throw;
+            }
         }
 
         public void SaveSettings(AgentSettings settings)
@@ -353,12 +417,39 @@ namespace Microsoft.VisualStudio.Services.Agent
             {
                 // Delete existing agent settings file first, since the file is hidden and not able to overwrite.
                 Trace.Info("Delete exist agent settings file.");
-                IOUtil.DeleteFile(_configFilePath);
+                try
+                {
+                    IOUtil.DeleteFile(_configFilePath);
+                }
+                catch (Exception ex)
+                {
+                    Trace.Error($"[IO ERROR] action=delete file={_configFilePath} msg={ex.Message}");
+                    Trace.Error(ex);
+                    throw;
+                }
             }
 
-            IOUtil.SaveObject(settings, _configFilePath);
+            try
+            {
+                IOUtil.SaveObject(settings, _configFilePath);
+            }
+            catch (Exception ex)
+            {
+                Trace.Error($"[IO ERROR] action=write file={_configFilePath} msg={ex.Message}");
+                Trace.Error(ex);
+                throw;
+            }
             Trace.Info("Settings Saved.");
-            File.SetAttributes(_configFilePath, File.GetAttributes(_configFilePath) | FileAttributes.Hidden);
+            try
+            {
+                File.SetAttributes(_configFilePath, File.GetAttributes(_configFilePath) | FileAttributes.Hidden);
+            }
+            catch (Exception ex)
+            {
+                Trace.Error($"[IO ERROR] action=set-attributes file={_configFilePath} msg={ex.Message}");
+                Trace.Error(ex);
+                throw;
+            }
         }
 
         public void SaveAutoLogonSettings(AutoLogonSettings autoLogonSettings)
@@ -368,34 +459,97 @@ namespace Microsoft.VisualStudio.Services.Agent
             {
                 // Delete existing autologon settings file first, since the file is hidden and not able to overwrite.
                 Trace.Info("Delete existing autologon settings file.");
-                IOUtil.DeleteFile(_autoLogonSettingsFilePath);
+                try
+                {
+                    IOUtil.DeleteFile(_autoLogonSettingsFilePath);
+                }
+                catch (Exception ex)
+                {
+                    Trace.Error($"[IO ERROR] action=delete file={_autoLogonSettingsFilePath} msg={ex.Message}");
+                    Trace.Error(ex);
+                    throw;
+                }
             }
 
-            IOUtil.SaveObject(autoLogonSettings, _autoLogonSettingsFilePath);
+            try
+            {
+                IOUtil.SaveObject(autoLogonSettings, _autoLogonSettingsFilePath);
+            }
+            catch (Exception ex)
+            {
+                Trace.Error($"[IO ERROR] action=write file={_autoLogonSettingsFilePath} msg={ex.Message}");
+                Trace.Error(ex);
+                throw;
+            }
             Trace.Info("AutoLogon settings Saved.");
-            File.SetAttributes(_autoLogonSettingsFilePath, File.GetAttributes(_autoLogonSettingsFilePath) | FileAttributes.Hidden);
+            try
+            {
+                File.SetAttributes(_autoLogonSettingsFilePath, File.GetAttributes(_autoLogonSettingsFilePath) | FileAttributes.Hidden);
+            }
+            catch (Exception ex)
+            {
+                Trace.Error($"[IO ERROR] action=set-attributes file={_autoLogonSettingsFilePath} msg={ex.Message}");
+                Trace.Error(ex);
+                throw;
+            }
         }
 
         public void DeleteCredential()
         {
-            IOUtil.Delete(_credFilePath, default(CancellationToken));
+            try
+            {
+                IOUtil.Delete(_credFilePath, default(CancellationToken));
+            }
+            catch (Exception ex)
+            {
+                Trace.Error($"[IO ERROR] action=delete file={_credFilePath} msg={ex.Message}");
+                Trace.Error(ex);
+                throw;
+            }
         }
 
         public void DeleteSettings()
         {
-            IOUtil.Delete(_configFilePath, default(CancellationToken));
+            try
+            {
+                IOUtil.Delete(_configFilePath, default(CancellationToken));
+            }
+            catch (Exception ex)
+            {
+                Trace.Error($"[IO ERROR] action=delete file={_configFilePath} msg={ex.Message}");
+                Trace.Error(ex);
+                throw;
+            }
         }
 
         public void DeleteAutoLogonSettings()
         {
-            IOUtil.Delete(_autoLogonSettingsFilePath, default(CancellationToken));
+            try
+            {
+                IOUtil.Delete(_autoLogonSettingsFilePath, default(CancellationToken));
+            }
+            catch (Exception ex)
+            {
+                Trace.Error($"[IO ERROR] action=delete file={_autoLogonSettingsFilePath} msg={ex.Message}");
+                Trace.Error(ex);
+                throw;
+            }
         }
 
         public AgentRuntimeOptions GetAgentRuntimeOptions()
         {
             if (_runtimeOptions == null && File.Exists(_runtimeOptionsFilePath))
             {
-                _runtimeOptions = IOUtil.LoadObject<AgentRuntimeOptions>(_runtimeOptionsFilePath);
+                try
+                {
+                    _runtimeOptions = IOUtil.LoadObject<AgentRuntimeOptions>(_runtimeOptionsFilePath);
+                }
+                catch (Exception ex)
+                {
+                    Trace.Error($"[IO ERROR] action=read file={_runtimeOptionsFilePath} msg={ex.Message}");
+                    Trace.Error(ex);
+                    throw;
+                }
             }
 
             return _runtimeOptions;
@@ -408,17 +562,53 @@ namespace Microsoft.VisualStudio.Services.Agent
             {
                 // Delete existing runtime options file first, since the file is hidden and not able to overwrite.
                 Trace.Info("Delete exist runtime options file.");
-                IOUtil.DeleteFile(_runtimeOptionsFilePath);
+                try
+                {
+                    IOUtil.DeleteFile(_runtimeOptionsFilePath);
+                }
+                catch (Exception ex)
+                {
+                    Trace.Error($"[IO ERROR] action=delete file={_runtimeOptionsFilePath} msg={ex.Message}");
+                    Trace.Error(ex);
+                    throw;
+                }
             }
 
-            IOUtil.SaveObject(options, _runtimeOptionsFilePath);
+            try
+            {
+                IOUtil.SaveObject(options, _runtimeOptionsFilePath);
+            }
+            catch (Exception ex)
+            {
+                Trace.Error($"[IO ERROR] action=write file={_runtimeOptionsFilePath} msg={ex.Message}");
+                Trace.Error(ex);
+                throw;
+            }
             Trace.Info("Options Saved.");
-            File.SetAttributes(_runtimeOptionsFilePath, File.GetAttributes(_runtimeOptionsFilePath) | FileAttributes.Hidden);
+            try
+            {
+                File.SetAttributes(_runtimeOptionsFilePath, File.GetAttributes(_runtimeOptionsFilePath) | FileAttributes.Hidden);
+            }
+            catch (Exception ex)
+            {
+                Trace.Error($"[IO ERROR] action=set-attributes file={_runtimeOptionsFilePath} msg={ex.Message}");
+                Trace.Error(ex);
+                throw;
+            }
         }
 
         public void DeleteAgentRuntimeOptions()
         {
-            IOUtil.Delete(_runtimeOptionsFilePath, default(CancellationToken));
+            try
+            {
+                IOUtil.Delete(_runtimeOptionsFilePath, default(CancellationToken));
+            }
+            catch (Exception ex)
+            {
+                Trace.Error($"[IO ERROR] action=delete file={_runtimeOptionsFilePath} msg={ex.Message}");
+                Trace.Error(ex);
+                throw;
+            }
         }
     }
 }

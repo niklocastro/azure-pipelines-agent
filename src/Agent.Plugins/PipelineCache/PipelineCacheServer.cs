@@ -6,7 +6,6 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Agent.Plugins.PipelineArtifact;
 using Agent.Plugins.PipelineCache.Telemetry;
 using Agent.Sdk;
 using Microsoft.VisualStudio.Services.Agent.Blob;
@@ -131,7 +130,10 @@ namespace Agent.Plugins.PipelineCache
                             }
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        tracer.Warn($"[TarCleanup] failed to delete pipeline cache archive path='{uploadPath}': {ex}");
+                    }
                 }
 
                 // Try to cache the artifact
@@ -150,8 +152,16 @@ namespace Agent.Plugins.PipelineCache
                         cancellationToken,
                         cacheRecord);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    try
+                    {
+                        var host = connection?.Uri?.Host ?? "<unknown>";
+                        string status = (ex as System.Net.Http.HttpRequestException)?.StatusCode?.ToString() ?? "<unknown>";
+                        context.Warning($"[SaveCache] host={host} status={status} op=CreatePipelineCacheArtifact failed: {ex.Message}");
+                        context.Debug(ex.ToString());
+                    }
+                    catch { }
                     context.Output($"Failed to cache item.");
                 }
 
@@ -196,8 +206,16 @@ namespace Agent.Plugins.PipelineCache
                         cancellationToken,
                         cacheRecord);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    try
+                    {
+                        var host = connection?.Uri?.Host ?? "<unknown>";
+                        string status = (ex as System.Net.Http.HttpRequestException)?.StatusCode?.ToString() ?? "<unknown>";
+                        context.Warning($"[RestoreCache] host={host} status={status} op=GetPipelineCacheArtifact failed: {ex.Message}");
+                        context.Debug(ex.ToString());
+                    }
+                    catch { }
                     context.Output($"Failed to get cached item.");
                 }
 
@@ -361,7 +379,10 @@ namespace Agent.Plugins.PipelineCache
                         }
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    tracer.Warn($"[TarCleanup] failed to delete manifest file path='{manifestPath}': {ex}");
+                }
             }
             else
             {

@@ -64,11 +64,33 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     // wait async command to finish.
                     await command.WaitAsync();
                 }
-
+                catch (OperationCanceledException ex)
+                {
+                    // Distinguish between agent shutdown, job cancel, and unknown cancellation
+                    if (AgentKnobs.FailJobWhenAgentDies.GetValue(jobContext).AsBoolean() && HostContext.AgentShutdownToken.IsCancellationRequested)
+                    {
+                        PublishTelemetry(jobContext, TaskResult.Failed.ToString(), "124");
+                        Trace.Error($"Caught Agent shutdown cancellation from job-level async command {command.Name}: {ex.Message}");
+                        jobContext.Error(ex);
+                        jobContext.Result = TaskResult.Failed;
+                        jobContext.Variables.Agent_JobStatus = jobContext.Result;
+                    }
+                    else
+                    {
+                        var reason = jobContext.CancellationToken.IsCancellationRequested ? "job-cancel" : "unknown";
+                        Trace.Info($"[CANCELLED] op=jobAsyncCommand name='{command.Name}' reason={reason} msg='{ex.Message}'");
+                        jobContext.Error(ex);
+                        jobContext.Result = TaskResultUtil.MergeTaskResults(jobContext.Result, TaskResult.Canceled);
+                        jobContext.Variables.Agent_JobStatus = jobContext.Result;
+                    }
+                }
                 catch (Exception ex)
                 {
-                    // Log the error
-                    Trace.Info($"Caught exception from async command {command.Name}: {ex}");
+                    // Log the error and mark job failed (merge preserves worse result)
+                    Trace.Error($"Caught exception from job-level async command {command.Name}: {ex}");
+                    jobContext.Error(ex);
+                    jobContext.Result = TaskResultUtil.MergeTaskResults(jobContext.Result, TaskResult.Failed);
+                    jobContext.Variables.Agent_JobStatus = jobContext.Result;
                 }
             }
             foreach (IStep step in steps)
@@ -282,8 +304,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 }
                 else
                 {
-                    // Log the exception and cancel the step.
-                    Trace.Error($"Caught cancellation exception from step: {ex}");
+                    // Log the cancellation as info and cancel the step.
+                    var reason = jobCancellationToken.IsCancellationRequested ? "job-cancel" : "unknown";
+                    Trace.Info($"[CANCELLED] op=step name='{step.DisplayName}' reason={reason} msg='{ex.Message}'");
                     step.ExecutionContext.Error(ex);
                     step.ExecutionContext.Result = TaskResult.Canceled;
                 }
@@ -329,7 +352,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     else
                     {
                         // log and save the OperationCanceledException, set step result to canceled if the current result is not failed.
-                        Trace.Error($"Caught cancellation exception from async command {command.Name}: {ex}");
+                        var reason = jobCancellationToken.IsCancellationRequested ? "job-cancel" : "unknown";
+                        Trace.Info($"[CANCELLED] op=asyncCommand name='{command.Name}' reason={reason} msg='{ex.Message}'");
                         step.ExecutionContext.Error(ex);
 
                         // if the step already failed, don't set it to canceled.

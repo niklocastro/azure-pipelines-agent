@@ -84,6 +84,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             }
         }
 
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Maintainability", "CA1505:AvoidUnmaintainableCode", Justification = "Complexity is required for job orchestration; refactor would reduce clarity.")]
         private async Task RunAsyncInternal()
         {
             var taskManager = HostContext.GetService<ITaskManager>();
@@ -105,12 +106,56 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 scope.Set(WellKnownDistributedTaskVariables.TaskInstanceName, Task.Name);
 
                 // Load the task definition and choose the handler.
-                // TODO: Add a try catch here to give a better error message.
-                Definition definition = taskManager.Load(Task);
+                Definition definition = null;
+                try
+                {
+                    definition = taskManager.Load(Task);
+                }
+                catch (FileNotFoundException fnf)
+                {
+                    ExecutionContext.Error($"Task definition not found for '{Task?.Reference?.Name ?? Task?.Name ?? "<unknown>"}': {fnf.Message}");
+                    ExecutionContext.Result = TaskResult.Failed;
+                    ExecutionContext.ResultCode = $"TaskDefinitionNotFound:{fnf.FileName}";
+                    return;
+                }
+                catch (UnauthorizedAccessException uae)
+                {
+                    ExecutionContext.Error($"Access denied while loading task definition for '{Task?.Reference?.Name ?? Task?.Name ?? "<unknown>"}'.");
+                    ExecutionContext.Result = TaskResult.Failed;
+                    ExecutionContext.ResultCode = "TaskDefinitionAccessDenied";
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    ExecutionContext.Error($"Failed to load task definition for '{Task?.Reference?.Name ?? Task?.Name ?? "<unknown>"}': {ex.Message}");
+                    ExecutionContext.Result = TaskResult.Failed;
+                    ExecutionContext.ResultCode = $"TaskDefinitionLoadFailed:{ex.GetType().Name}";
+                    return;
+                }
+
                 ArgUtil.NotNull(definition, nameof(definition));
 
-                // Verify Signatures and Re-Extract Tasks if neccessary
-                await VerifyTask(taskManager, definition);
+                // Verify Signatures and Re-Extract Tasks if necessary
+                try
+                {
+                    await VerifyTask(taskManager, definition);
+                }
+                catch (InvalidOperationException ioe)
+                {
+                    // Verification in error mode throws InvalidOperationException
+                    ExecutionContext.Error(StringUtil.Loc("TaskSignatureVerificationFailed"));
+                    ExecutionContext.Result = TaskResult.Failed;
+                    ExecutionContext.ResultCode = "TaskSignatureVerificationFailed";
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    // Unexpected error during verification/extraction
+                    ExecutionContext.Error(StringUtil.Loc("TaskVerificationError", ex.Message));
+                    ExecutionContext.Result = TaskResult.Failed;
+                    ExecutionContext.ResultCode = $"TaskVerificationError:{ex.GetType().Name}";
+                    return;
+                }
 
                 // Print out task metadata
                 PrintTaskMetaData(definition);
@@ -127,7 +172,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     case JobRunStage.PostJob:
                         currentExecution = definition.Data?.PostJobExecution;
                         break;
-                };
+                }
+                ;
 
                 HandlerData handlerData = GetHandlerData(ExecutionContext, currentExecution, PlatformUtil.HostOS);
 

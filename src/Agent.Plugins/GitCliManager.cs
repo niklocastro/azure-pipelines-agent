@@ -10,6 +10,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.IO;
+using System.ComponentModel;
 using Agent.Sdk;
 using Agent.Sdk.Knob;
 using Microsoft.VisualStudio.Services.Agent.Util;
@@ -25,6 +26,8 @@ namespace Agent.Plugins.Repository
 
     public class GitCliManager : IGitCliManager
     {
+        private const int _processStartFailureExitCode = 255; // Used when process fails to start
+
         private static Encoding _encoding
         {
             get => PlatformUtil.RunningOnWindows
@@ -145,7 +148,15 @@ namespace Agent.Plugins.Repository
                 gitLfsPath = WhichUtil.Which("git-lfs", require: false, trace: context);
             }
 
-            ArgUtil.File(gitPath, nameof(gitPath));
+            try
+            {
+                ArgUtil.File(gitPath, nameof(gitPath));
+            }
+            catch (Exception ex)
+            {
+                context.Error($"Git executable not found or inaccessible at '{gitPath}': {ex.Message}");
+                throw;
+            }
 
             // Get the Git version.
             gitVersion = await GitVersion(context);
@@ -711,27 +722,45 @@ namespace Agent.Plugins.Repository
         {
             string arg = StringUtil.Format($"{command} {options}").Trim();
             context.Command($"git {arg}");
-
-            using (var processInvoker = new ProcessInvoker(context, disableWorkerCommands: true))
+            try
             {
-                processInvoker.OutputDataReceived += delegate (object sender, ProcessDataReceivedEventArgs message)
+                using (var processInvoker = new ProcessInvoker(context, disableWorkerCommands: true))
                 {
-                    context.Output(message.Data);
-                };
+                    processInvoker.OutputDataReceived += delegate (object sender, ProcessDataReceivedEventArgs message)
+                    {
+                        context.Output(message.Data);
+                    };
 
-                processInvoker.ErrorDataReceived += delegate (object sender, ProcessDataReceivedEventArgs message)
-                {
-                    context.Output(message.Data);
-                };
+                    processInvoker.ErrorDataReceived += delegate (object sender, ProcessDataReceivedEventArgs message)
+                    {
+                        context.Output(message.Data);
+                    };
 
-                return await processInvoker.ExecuteAsync(
-                    workingDirectory: repoRoot,
-                    fileName: gitPath,
-                    arguments: arg,
-                    environment: gitEnv,
-                    requireExitCodeZero: false,
-                    outputEncoding: _encoding,
-                    cancellationToken: cancellationToken);
+                    return await processInvoker.ExecuteAsync(
+                        workingDirectory: repoRoot,
+                        fileName: gitPath,
+                        arguments: arg,
+                        environment: gitEnv,
+                        requireExitCodeZero: false,
+                        outputEncoding: _encoding,
+                        cancellationToken: cancellationToken);
+                }
+            }
+            catch (OperationCanceledException oce)
+            {
+                context.Warning($"Git command cancelled: git {arg}. Message: {oce.Message}");
+                return _processStartFailureExitCode;
+            }
+            catch (Win32Exception w32)
+            {
+                context.Error($"Failed to start git process. Error: {w32.Message} (NativeErrorCode={w32.NativeErrorCode})");
+                return _processStartFailureExitCode;
+            }
+            catch (Exception ex)
+            {
+                context.Error($"Unexpected error running git command 'git {arg}': {ex.Message}");
+                context.Debug(ex.ToString());
+                return _processStartFailureExitCode;
             }
         }
 
@@ -745,26 +774,45 @@ namespace Agent.Plugins.Repository
                 output = new List<string>();
             }
 
-            using (var processInvoker = new ProcessInvoker(context, disableWorkerCommands: true))
+            try
             {
-                processInvoker.OutputDataReceived += delegate (object sender, ProcessDataReceivedEventArgs message)
+                using (var processInvoker = new ProcessInvoker(context, disableWorkerCommands: true))
                 {
-                    output.Add(message.Data);
-                };
+                    processInvoker.OutputDataReceived += delegate (object sender, ProcessDataReceivedEventArgs message)
+                    {
+                        output.Add(message.Data);
+                    };
 
-                processInvoker.ErrorDataReceived += delegate (object sender, ProcessDataReceivedEventArgs message)
-                {
-                    context.Output(message.Data);
-                };
+                    processInvoker.ErrorDataReceived += delegate (object sender, ProcessDataReceivedEventArgs message)
+                    {
+                        context.Output(message.Data);
+                    };
 
-                return await processInvoker.ExecuteAsync(
-                    workingDirectory: repoRoot,
-                    fileName: gitPath,
-                    arguments: arg,
-                    environment: gitEnv,
-                    requireExitCodeZero: false,
-                    outputEncoding: _encoding,
-                    cancellationToken: default(CancellationToken));
+                    return await processInvoker.ExecuteAsync(
+                        workingDirectory: repoRoot,
+                        fileName: gitPath,
+                        arguments: arg,
+                        environment: gitEnv,
+                        requireExitCodeZero: false,
+                        outputEncoding: _encoding,
+                        cancellationToken: default(CancellationToken));
+                }
+            }
+            catch (OperationCanceledException oce)
+            {
+                context.Warning($"Git command cancelled: git {arg}. Message: {oce.Message}");
+                return _processStartFailureExitCode;
+            }
+            catch (Win32Exception w32)
+            {
+                context.Error($"Failed to start git process. Error: {w32.Message} (NativeErrorCode={w32.NativeErrorCode})");
+                return _processStartFailureExitCode;
+            }
+            catch (Exception ex)
+            {
+                context.Error($"Unexpected error running git command 'git {arg}': {ex.Message}");
+                context.Debug(ex.ToString());
+                return _processStartFailureExitCode;
             }
         }
 
@@ -773,26 +821,45 @@ namespace Agent.Plugins.Repository
             string arg = StringUtil.Format($"{additionalCommandLine} {command} {options}").Trim();
             context.Command($"git {arg}");
 
-            using (var processInvoker = new ProcessInvoker(context, disableWorkerCommands: true))
+            try
             {
-                processInvoker.OutputDataReceived += delegate (object sender, ProcessDataReceivedEventArgs message)
+                using (var processInvoker = new ProcessInvoker(context, disableWorkerCommands: true))
                 {
-                    context.Output(message.Data);
-                };
+                    processInvoker.OutputDataReceived += delegate (object sender, ProcessDataReceivedEventArgs message)
+                    {
+                        context.Output(message.Data);
+                    };
 
-                processInvoker.ErrorDataReceived += delegate (object sender, ProcessDataReceivedEventArgs message)
-                {
-                    context.Output(message.Data);
-                };
+                    processInvoker.ErrorDataReceived += delegate (object sender, ProcessDataReceivedEventArgs message)
+                    {
+                        context.Output(message.Data);
+                    };
 
-                return await processInvoker.ExecuteAsync(
-                    workingDirectory: repoRoot,
-                    fileName: gitPath,
-                    arguments: arg,
-                    environment: gitEnv,
-                    requireExitCodeZero: false,
-                    outputEncoding: _encoding,
-                    cancellationToken: cancellationToken);
+                    return await processInvoker.ExecuteAsync(
+                        workingDirectory: repoRoot,
+                        fileName: gitPath,
+                        arguments: arg,
+                        environment: gitEnv,
+                        requireExitCodeZero: false,
+                        outputEncoding: _encoding,
+                        cancellationToken: cancellationToken);
+                }
+            }
+            catch (OperationCanceledException oce)
+            {
+                context.Warning($"Git command cancelled: git {arg}. Message: {oce.Message}");
+                return _processStartFailureExitCode;
+            }
+            catch (Win32Exception w32)
+            {
+                context.Error($"Failed to start git process. Error: {w32.Message} (NativeErrorCode={w32.NativeErrorCode})");
+                return _processStartFailureExitCode;
+            }
+            catch (Exception ex)
+            {
+                context.Error($"Unexpected error running git command 'git {arg}': {ex.Message}");
+                context.Debug(ex.ToString());
+                return _processStartFailureExitCode;
             }
         }
     }

@@ -158,7 +158,23 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
                         {
                             Trace.Info($"Load assembly: {assemblyFile}.");
                             var assembly = Assembly.LoadFrom(assemblyFile);
-                            var types = assembly.GetTypes();
+                            Type[] types;
+                            try
+                            {
+                                types = assembly.GetTypes();
+                            }
+                            catch (ReflectionTypeLoadException rtlEx)
+                            {
+                                Trace.Error($"[Warmup] Failed to load types for assembly '{assembly.FullName}' from '{assemblyFile}'.");
+                                if (rtlEx.LoaderExceptions != null)
+                                {
+                                    foreach (var lex in rtlEx.LoaderExceptions)
+                                    {
+                                        Trace.Error($"[Warmup] Loader exception: {lex.Message}");
+                                    }
+                                }
+                                continue;
+                            }
                             foreach (Type loadedType in types)
                             {
                                 try
@@ -177,6 +193,22 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
                                 catch (Exception ex)
                                 {
                                     Trace.Error(ex);
+                                }
+                            }
+                        }
+                        catch (FileNotFoundException fnfEx)
+                        {
+                            Trace.Error($"[Warmup] Required assembly not found: '{fnfEx.FileName ?? Path.GetFileName(assemblyFile)}' when loading '{assemblyFile}'. BaseDir='{AppDomain.CurrentDomain.BaseDirectory}'.");
+                            Trace.Error(fnfEx);
+                        }
+                        catch (ReflectionTypeLoadException rtlOuter)
+                        {
+                            Trace.Error($"[Warmup] ReflectionTypeLoadException for '{assemblyFile}': {rtlOuter.Message}");
+                            if (rtlOuter.LoaderExceptions != null)
+                            {
+                                foreach (var le in rtlOuter.LoaderExceptions)
+                                {
+                                    Trace.Error($"[Warmup] Loader exception: {le.Message}");
                                 }
                             }
                         }
@@ -507,13 +539,22 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
                                 }
                                 else
                                 {
-                                    if (autoUpdateInProgress == false)
+                                    if (!autoUpdateInProgress)
                                     {
                                         autoUpdateInProgress = true;
-                                        var agentUpdateMessage = JsonUtility.FromString<AgentRefreshMessage>(message.Body);
-                                        var selfUpdater = HostContext.GetService<ISelfUpdater>();
-                                        selfUpdateTask = selfUpdater.SelfUpdate(agentUpdateMessage, jobDispatcher, !runOnce && HostContext.StartupType != StartupType.Service, HostContext.AgentShutdownToken);
-                                        Trace.Info("Agent update handling - Self-update task initiated, target version: {0}", agentUpdateMessage.TargetVersion);
+                                        try
+                                        {
+                                            var agentUpdateMessage = JsonUtility.FromString<AgentRefreshMessage>(message.Body);
+                                            var selfUpdater = HostContext.GetService<ISelfUpdater>();
+                                            selfUpdateTask = selfUpdater.SelfUpdate(agentUpdateMessage, jobDispatcher, !runOnce && HostContext.StartupType != StartupType.Service, HostContext.AgentShutdownToken);
+                                            Trace.Info("Agent update handling - Self-update task initiated, target version: {0}", agentUpdateMessage.TargetVersion);
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            // Malformed refresh message; log and continue. Let finally delete the message.
+                                            Trace.Warning($"[POISON] Failed to parse AgentRefreshMessage id={message.MessageId} err={ex.GetType().Name}: {ex.Message}");
+                                            autoUpdateInProgress = false;
+                                        }
                                     }
                                     else
                                     {
@@ -536,56 +577,124 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
                                 }
                                 else
                                 {
-                                    Pipelines.AgentJobRequestMessage pipelineJobMessage = null;
-                                    switch (message.MessageType)
+                                    try
                                     {
-                                        case JobRequestMessageTypes.AgentJobRequest:
-                                            Trace.Verbose("Converting legacy job message format to pipeline format");
-                                            var legacyJobMessage = JsonUtility.FromString<AgentJobRequestMessage>(message.Body);
-                                            pipelineJobMessage = Pipelines.AgentJobRequestMessageUtil.Convert(legacyJobMessage);
-                                            break;
-                                        case JobRequestMessageTypes.PipelineAgentJobRequest:
-                                            Trace.Verbose("Processing pipeline job message for execution");
-                                            pipelineJobMessage = JsonUtility.FromString<Pipelines.AgentJobRequestMessage>(message.Body);
-                                            break;
-                                    }
+                                        // Ensure body exists
+                                        if (string.IsNullOrEmpty(message?.Body))
+                                        {
+                                            Trace.Warning($"[POISON] Empty message body for job request id={message?.MessageId} type={message?.MessageType}.");
+                                            continue;
+                                        }
 
-                                    Trace.Info("Dispatching job to worker process for execution");
-                                    jobDispatcher.Run(pipelineJobMessage, runOnce);
-                                    if (runOnce)
+                                        Pipelines.AgentJobRequestMessage pipelineJobMessage = null;
+                                        switch (message.MessageType)
+                                        {
+                                            case JobRequestMessageTypes.AgentJobRequest:
+                                                try
+                                                {
+                                                    Trace.Verbose("Converting legacy job message format to pipeline format");
+                                                    var legacyJobMessage = JsonUtility.FromString<AgentJobRequestMessage>(message.Body);
+                                                    if (legacyJobMessage.JobId == Guid.Empty)
+                                                    {
+                                                        throw new InvalidDataException("JobId is empty in legacy AgentJobRequest message");
+                                                    }
+                                                    pipelineJobMessage = Pipelines.AgentJobRequestMessageUtil.Convert(legacyJobMessage);
+                                                }
+                                                catch (Newtonsoft.Json.JsonReaderException jex)
+                                                {
+                                                    Trace.Warning($"[POISON] JSON reader error parsing legacy job id={message.MessageId}: {jex.Message}. BodyLen={(message.Body?.Length ?? 0)}");
+                                                    break;
+                                                }
+                                                catch (Newtonsoft.Json.JsonSerializationException jsex)
+                                                {
+                                                    Trace.Warning($"[POISON] JSON serialization error parsing legacy job id={message.MessageId}: {jsex.Message}. BodyLen={(message.Body?.Length ?? 0)}");
+                                                    break;
+                                                }
+                                                catch (InvalidDataException idex)
+                                                {
+                                                    Trace.Warning($"[POISON] Validation failed for legacy job id={message.MessageId}: {idex.Message}");
+                                                    break;
+                                                }
+                                                break;
+                                            case JobRequestMessageTypes.PipelineAgentJobRequest:
+                                                try
+                                                {
+                                                    Trace.Verbose("Processing pipeline job message for execution");
+                                                    pipelineJobMessage = JsonUtility.FromString<Pipelines.AgentJobRequestMessage>(message.Body);
+                                                }
+                                                catch (Newtonsoft.Json.JsonReaderException jex)
+                                                {
+                                                    Trace.Warning($"[POISON] JSON reader error parsing pipeline job id={message.MessageId}: {jex.Message}. BodyLen={(message.Body?.Length ?? 0)}");
+                                                    break;
+                                                }
+                                                catch (Newtonsoft.Json.JsonSerializationException jsex)
+                                                {
+                                                    Trace.Warning($"[POISON] JSON serialization error parsing pipeline job id={message.MessageId}: {jsex.Message}. BodyLen={(message.Body?.Length ?? 0)}");
+                                                    break;
+                                                }
+                                                break;
+                                        }
+
+                                        if (pipelineJobMessage != null)
+                                        {
+                                            Trace.Info("Dispatching job to worker process for execution");
+                                            jobDispatcher.Run(pipelineJobMessage, runOnce);
+                                            if (runOnce)
+                                            {
+                                                Trace.Info("One time used agent received job message.");
+                                                runOnceJobReceived = true;
+                                            }
+                                        }
+                                    }
+                                    catch (Exception ex)
                                     {
-                                        Trace.Info("One time used agent received job message.");
-                                        runOnceJobReceived = true;
+                                        // Malformed job request; log and continue. The message will be deleted in finally.
+                                        Trace.Warning($"[POISON] Failed to parse JobRequest id={message.MessageId} type={message.MessageType} err={ex.GetType().Name}: {ex.Message}");
                                     }
                                 }
                             }
                             else if (string.Equals(message.MessageType, JobCancelMessage.MessageType, StringComparison.OrdinalIgnoreCase))
                             {
-                                Trace.Verbose("Processing job cancellation request from Azure DevOps");
-                                var cancelJobMessage = JsonUtility.FromString<JobCancelMessage>(message.Body);
-                                bool jobCancelled = jobDispatcher.Cancel(cancelJobMessage);
-                                skipMessageDeletion = (autoUpdateInProgress || runOnceJobReceived) && !jobCancelled;
-
-                                if (skipMessageDeletion)
+                                try
                                 {
-                                    Trace.Info($"Skip message deletion for cancellation message '{message.MessageId}'.");
+                                    Trace.Verbose("Processing job cancellation request from Azure DevOps");
+                                    var cancelJobMessage = JsonUtility.FromString<JobCancelMessage>(message.Body);
+                                    bool jobCancelled = jobDispatcher.Cancel(cancelJobMessage);
+                                    skipMessageDeletion = (autoUpdateInProgress || runOnceJobReceived) && !jobCancelled;
+
+                                    if (skipMessageDeletion)
+                                    {
+                                        Trace.Info($"Skip message deletion for cancellation message '{message.MessageId}'.");
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    Trace.Warning($"[POISON] Failed to parse JobCancelMessage id={message.MessageId} err={ex.GetType().Name}: {ex.Message}");
                                 }
                             }
                             else if (string.Equals(message.MessageType, JobMetadataMessage.MessageType, StringComparison.OrdinalIgnoreCase))
                             {
-                                Trace.Info("Processing job metadata update from Azure DevOps");
-                                var metadataMessage = JsonUtility.FromString<JobMetadataMessage>(message.Body);
-                                jobDispatcher.MetadataUpdate(metadataMessage);
+                                try
+                                {
+                                    Trace.Info("Processing job metadata update from Azure DevOps");
+                                    var metadataMessage = JsonUtility.FromString<JobMetadataMessage>(message.Body);
+                                    jobDispatcher.MetadataUpdate(metadataMessage);
+                                }
+                                catch (Exception ex)
+                                {
+                                    Trace.Warning($"[POISON] Failed to parse JobMetadataMessage id={message.MessageId} err={ex.GetType().Name}: {ex.Message}");
+                                }
                             }
                             else
                             {
-                                Trace.Error($"Received message {message.MessageId} with unsupported message type {message.MessageType}.");
+                                Trace.Warning($"[POISON] Received unsupported message id={message.MessageId} type={message.MessageType}.");
                             }
                         }
                         catch (AggregateException e)
                         {
-                            Trace.Error($"Exception occurred while processing message from queue: {e.Message}");
-                            ExceptionsUtil.HandleAggregateException((AggregateException)e, Trace.Error);
+                            var ctx = message != null ? $"MessageId={message.MessageId} Type={message.MessageType}" : "MessageLoop";
+                            Trace.Error($"AggregateException in processing context [{ctx}]. Inner exceptions: {e.InnerExceptions.Count}");
+                            ExceptionsUtil.HandleAggregateException(e, (m) => Trace.Error($"[{ctx}] {m}"));
                         }
                         finally
                         {
@@ -622,13 +731,29 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
 
                     if (jobDispatcher != null)
                     {
-                        Trace.Info("Shutting down job dispatcher - terminating active jobs");
-                        await jobDispatcher.ShutdownAsync();
+                        try
+                        {
+                            Trace.Info("Shutting down job dispatcher - terminating active jobs");
+                            await jobDispatcher.ShutdownAsync();
+                        }
+                        catch (Exception ex)
+                        {
+                            Trace.Warning($"[Shutdown] JobDispatcher shutdown failed: {ex.Message}");
+                            Trace.Verbose(ex.ToString());
+                        }
                     }
-
                     Trace.Info("Cleaning up agent listener session - disconnecting from Azure DevOps");
-                    //TODO: make sure we don't mask more important exception
-                    await _listener.DeleteSessionAsync();
+
+                    // Ensure session deletion doesn't mask more important exceptions
+                    try
+                    {
+                        await _listener.DeleteSessionAsync();
+                        Trace.Info("[Shutdown] Agent session deleted.");
+                    }
+                    catch (Exception ex)
+                    {
+                        Trace.Warning($"[Shutdown] Failed to delete agent session: {ex.Message}");
+                    }
 
                     messageQueueLoopTokenSource.Dispose();
                 }

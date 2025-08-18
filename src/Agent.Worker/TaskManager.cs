@@ -14,12 +14,9 @@ using System.Threading.Tasks;
 
 using Agent.Sdk;
 using Agent.Sdk.Knob;
-using Agent.Sdk.Util;
 
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
 using Microsoft.VisualStudio.Services.Agent.Util;
-using Microsoft.VisualStudio.Services.Agent.Worker.Handlers;
-using Microsoft.VisualStudio.Services.Agent.Worker.Telemetry;
 using Microsoft.VisualStudio.Services.Common;
 
 using Newtonsoft.Json;
@@ -150,13 +147,20 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
             executionContext.Debug($"Extracting task {task.Name} from {zipFile} to {destinationDirectory}.");
 
-            Trace.Verbose("Deleting task destination folder: {0}", destinationDirectory);
-            IOUtil.DeleteDirectory(destinationDirectory, executionContext.CancellationToken);
+            try
+            {
+                Trace.Verbose("Deleting task destination folder: {0}", destinationDirectory);
+                IOUtil.DeleteDirectory(destinationDirectory, executionContext.CancellationToken);
 
-            Directory.CreateDirectory(destinationDirectory);
-            ZipFile.ExtractToDirectory(zipFile, destinationDirectory);
-            Trace.Verbose("Creating watermark file to indicate the task extracted successfully.");
-            File.WriteAllText(destinationDirectory + ".completed", DateTime.UtcNow.ToString());
+                Directory.CreateDirectory(destinationDirectory);
+                ExtractZip(zipFile, destinationDirectory);
+            }
+            catch (Exception ex)
+            {
+                Trace.Error($"[TaskExtract] failed id={task.Reference.Id} name={task.Name} ver={task.Reference.Version} zip='{zipFile}' dest='{destinationDirectory}' msg='{ex.Message}'");
+                Trace.Error(ex);
+                throw;
+            }
         }
 
         private async Task DownloadAsync(IExecutionContext executionContext, Pipelines.TaskStepDefinitionReference task)
@@ -245,10 +249,35 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                             Trace.Info($"Task download has been cancelled.");
                             throw;
                         }
+                        catch (HttpRequestException hre)
+                        {
+                            retryCount++;
+                            var cfg = HostContext.GetService<IConfigurationStore>().GetSettings();
+                            string host = string.Empty;
+                            try { host = new Uri(cfg.ServerUrl).Host; } catch { }
+                            string status = hre.StatusCode.HasValue ? ((int)hre.StatusCode.Value).ToString() : "";
+                            Trace.Error($"[DownloadTask] HTTP ERROR op=GetTaskContentZip host={host} status={status} attempt={retryCount} id={task.Id} name={task.Name} ver={task.Version} path='{destDirectory}' msg='{hre.Message}'");
+                            Trace.Error(hre);
+                        }
+                        catch (SocketException se)
+                        {
+                            retryCount++;
+                            var cfg = HostContext.GetService<IConfigurationStore>().GetSettings();
+                            string host = string.Empty;
+                            try { host = new Uri(cfg.ServerUrl).Host; } catch { }
+                            Trace.Error($"[DownloadTask] NETWORK ERROR op=GetTaskContentZip host={host} attempt={retryCount} id={task.Id} name={task.Name} ver={task.Version} path='{destDirectory}' msg='{se.Message}'");
+                            Trace.Error(se);
+
+                            if (retryCount >= retryLimit)
+                            {
+                                Trace.Info($"Retry limit to download the '{task.Name}' task reached.");
+                                throw;
+                            }
+                        }
                         catch (Exception ex)
                         {
                             retryCount++;
-                            Trace.Error($"Fail to download task '{task.Id} ({task.Name}/{task.Version})' -- Attempt: {retryCount}");
+                            Trace.Error($"[DownloadTask] FAILED op=GetTaskContentZip attempt={retryCount} id={task.Id} name={task.Name} ver={task.Version} path='{destDirectory}' msg='{ex.Message}'");
                             Trace.Error(ex);
                             if (taskDownloadTimeout.Token.IsCancellationRequested)
                             {
@@ -285,7 +314,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     if (String.IsNullOrEmpty(Environment.GetEnvironmentVariable("VSTS_TASK_DOWNLOAD_NO_BACKOFF")))
                     {
                         var backOff = BackoffTimerHelper.GetRandomBackoff(TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(30));
-                        executionContext.Warning($"Back off {backOff.TotalSeconds} seconds before retry.");
+                        executionContext.Warning($"[DownloadTask] backoffSeconds={backOff.TotalSeconds} nextAttempt={retryCount + 1}");
                         await Task.Delay(backOff);
                     }
                 }
@@ -321,7 +350,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 catch (Exception ex)
                 {
                     //it is not critical if we fail to delete the temp folder
-                    Trace.Warning("Failed to delete temp folder '{0}'. Exception: {1}", tempDirectory, ex);
+                    Trace.Warning("[Cleanup] Failed to delete temp folder '{0}' for task id={1} name={2} ver={3}. Exception: {4}", tempDirectory, task.Id, task.Name, task.Version, ex);
                     executionContext.Warning(StringUtil.Loc("FailedDeletingTempDirectory0Message1", tempDirectory, ex.Message));
                 }
             }
@@ -459,9 +488,30 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
         private void ExtractZip(String zipFile, String destinationDirectory)
         {
-            ZipFile.ExtractToDirectory(zipFile, destinationDirectory);
-            Trace.Verbose("Create watermark file to indicate task download succeed.");
-            File.WriteAllText(destinationDirectory + ".completed", DateTime.UtcNow.ToString());
+            try
+            {
+                ZipFile.ExtractToDirectory(zipFile, destinationDirectory);
+                Trace.Verbose("Create watermark file to indicate task download succeed.");
+                File.WriteAllText(destinationDirectory + ".completed", DateTime.UtcNow.ToString());
+            }
+            catch (InvalidDataException ex)
+            {
+                Trace.Error($"[ExtractZip] Corrupt or invalid zip. zip='{zipFile}' dest='{destinationDirectory}' msg='{ex.Message}'");
+                Trace.Error(ex);
+                throw;
+            }
+            catch (IOException ex)
+            {
+                Trace.Error($"[ExtractZip] IO error. zip='{zipFile}' dest='{destinationDirectory}' msg='{ex.Message}'");
+                Trace.Error(ex);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Trace.Error($"[ExtractZip] failed. zip='{zipFile}' dest='{destinationDirectory}' msg='{ex.Message}'");
+                Trace.Error(ex);
+                throw;
+            }
         }
 
         private string GetDirectory(Pipelines.TaskStepDefinitionReference task)
@@ -475,7 +525,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 NormalizeTaskVersion(task));
         }
 
-        private string NormalizeTaskVersion(Pipelines.TaskStepDefinitionReference task) 
+        private string NormalizeTaskVersion(Pipelines.TaskStepDefinitionReference task)
         {
             ArgUtil.NotNullOrEmpty(task.Version, nameof(task.Version));
             return task.Version.Replace("+", "_");

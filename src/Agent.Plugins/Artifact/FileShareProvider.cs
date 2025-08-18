@@ -178,15 +178,29 @@ namespace Agent.Plugins
 
                 robocopyArguments += " /MT:" + parallelCount;
 
-                int exitCode = await processInvoker.ExecuteAsync(
-                        workingDirectory: "",
-                        fileName: "robocopy",
-                        arguments: robocopyArguments,
-                        environment: null,
-                        requireExitCodeZero: false,
-                        outputEncoding: null,
-                        killProcessOnCancel: true,
-                        cancellationToken: cancellationToken);
+                int exitCode;
+                try
+                {
+                    exitCode = await processInvoker.ExecuteAsync(
+                            workingDirectory: "",
+                            fileName: "robocopy",
+                            arguments: robocopyArguments,
+                            environment: null,
+                            requireExitCodeZero: false,
+                            outputEncoding: null,
+                            killProcessOnCancel: true,
+                            cancellationToken: cancellationToken);
+                }
+                catch (OperationCanceledException oce)
+                {
+                    executionContext.Warning($"robocopy cancelled: {oce.Message}");
+                    throw;
+                }
+                catch (System.ComponentModel.Win32Exception w32)
+                {
+                    executionContext.Error($"Failed to start 'robocopy'. Error: {w32.Message} (NativeErrorCode={w32.NativeErrorCode})");
+                    throw;
+                }
 
                 executionContext.Output(StringUtil.Loc("RobocopyBasedPublishArtifactTaskExitCode", exitCode));
                 // Exit code returned from robocopy. For more info https://blogs.technet.microsoft.com/deploymentguys/2008/06/16/robocopy-exit-codes/
