@@ -118,7 +118,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     ExecutionContext.ResultCode = $"TaskDefinitionNotFound:{fnf.FileName}";
                     return;
                 }
-                catch (UnauthorizedAccessException uae)
+                catch (UnauthorizedAccessException)
                 {
                     ExecutionContext.Error($"Access denied while loading task definition for '{Task?.Reference?.Name ?? Task?.Name ?? "<unknown>"}'.");
                     ExecutionContext.Result = TaskResult.Failed;
@@ -140,7 +140,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 {
                     await VerifyTask(taskManager, definition);
                 }
-                catch (InvalidOperationException ioe)
+                catch (InvalidOperationException)
                 {
                     // Verification in error mode throws InvalidOperationException
                     ExecutionContext.Error(StringUtil.Loc("TaskSignatureVerificationFailed"));
