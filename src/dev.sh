@@ -431,8 +431,8 @@ DOWNLOAD_DIR="${REPO_ROOT}/_downloads/${RUNTIME_ID}/netcore2x"
 PACKAGE_DIR="${REPO_ROOT}/_package/${RUNTIME_ID}"
 REPORT_DIR="${REPO_ROOT}/_reports/${RUNTIME_ID}"
 
-restore_dotnet_install_script
-restore_sdk_and_runtime
+# restore_dotnet_install_script
+# restore_sdk_and_runtime
 
 heading ".NET SDK to path"
 echo "Adding .NET SDK to PATH (${DOTNET_DIR})"
