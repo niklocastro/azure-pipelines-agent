@@ -3,7 +3,7 @@
     <LangVersion>10.0</LangVersion>
     <TargetFrameworks>net6.0</TargetFrameworks>
     <RuntimeIdentifier>$(PackageRuntime)</RuntimeIdentifier>
-    <SelfContained>true</SelfContained>
+    <SelfContained>false</SelfContained>
     <TargetLatestRuntimePatch>true</TargetLatestRuntimePatch>
     <AssetTargetFallback>portable-net45+win8</AssetTargetFallback>
     <NoWarn>NU1701;NU1603</NoWarn>
