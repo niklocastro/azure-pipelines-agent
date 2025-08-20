@@ -409,7 +409,8 @@ function detect_system_architecture() {
     echo "${processor}${os_arch}"
 }
 
-detect_platform_and_runtime_id
+# detect_platform_and_runtime_id
+DETECTED_RUNTIME_ID="linux-s390x"
 echo "Current platform: $CURRENT_PLATFORM"
 echo "Current runtime ID: $DETECTED_RUNTIME_ID"
 
