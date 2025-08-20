@@ -263,6 +263,7 @@ else
             "linux-x64") ARCH="linux-x64";;
             "linux-arm") ARCH="linux-armv7l";;
             "linux-arm64") ARCH="linux-arm64";;
+            "linux-s390x") ARCH="linux-s390x";;
             "osx-x64") ARCH="darwin-x64";;
             *) echo "Unknown PACKAGERUNTIME: ${PACKAGERUNTIME}"; exit 1;;
         esac
