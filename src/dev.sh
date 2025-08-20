@@ -40,20 +40,10 @@ if [[ $TARGET_FRAMEWORK == "" ]]; then
     TARGET_FRAMEWORK=$DEFAULT_TARGET_FRAMEWORK
 fi
 
-function get_net_version() {
-    local dotnet_versions="
-        net6.0-sdk=6.0.424
-        net6.0-runtime=6.0.32
 
-        net8.0-sdk=8.0.401
-        net8.0-runtime=8.0.8
-    "
 
-    echo "$dotnet_versions" | grep -o "$1=[^ ]*" | cut -d '=' -f2
-}
-
-DOTNET_SDK_VERSION=$(get_net_version "net8.0-sdk")
-DOTNET_RUNTIME_VERSION=$(get_net_version "${TARGET_FRAMEWORK}-runtime")
+DOTNET_SDK_VERSION="6.0.405"
+DOTNET_RUNTIME_VERSION="6.0.36"
 
 if [[ ($DOTNET_SDK_VERSION == "") || ($DOTNET_RUNTIME_VERSION == "") ]]; then
     failed "Incorrect target framework is specified"
@@ -110,6 +100,11 @@ function restore_sdk_and_runtime() {
         printf "\nInstalling Runtime...\n"
         bash "${DOTNET_INSTALL_SCRIPT_PATH}" --runtime dotnet --version "${DOTNET_RUNTIME_VERSION}" --install-dir "${DOTNET_DIR}" --skip-non-versioned-files --no-path || checkRC "${DOTNET_INSTALL_SCRIPT_NAME} (Runtime)"
     fi
+}
+
+function escape-s390x()
+{
+   $( [[ $1 = "linux-s390x" ]] && echo "" || echo $1 )
 }
 
 function detect_platform_and_runtime_id() {
@@ -173,12 +168,12 @@ function make_build() {
 
     if [[ "$ADO_ENABLE_LOGISSUE" == "true" ]]; then
 
-        dotnet msbuild -t:"${TARGET}" -p:PackageRuntime="${RUNTIME_ID}" -p:PackageType="${PACKAGE_TYPE}" -p:BUILDCONFIG="${BUILD_CONFIG}" -p:AgentVersion="${AGENT_VERSION}" -p:LayoutRoot="${LAYOUT_DIR}" -p:CodeAnalysis="true" -p:TargetFramework="${TARGET_FRAMEWORK}" -p:RuntimeFrameworkVersion="${DOTNET_RUNTIME_VERSION}" |
+        dotnet msbuild -t:"${TARGET}" -p:PackageRuntime="$(escape-s390x $RUNTIME_ID)" -p:PackageType="${PACKAGE_TYPE}" -p:BUILDCONFIG="${BUILD_CONFIG}" -p:AgentVersion="${AGENT_VERSION}" -p:LayoutRoot="${LAYOUT_DIR}" -p:CodeAnalysis="true" -p:TargetFramework="${TARGET_FRAMEWORK}" -p:RuntimeFrameworkVersion="${DOTNET_RUNTIME_VERSION}" |
             sed -e "/\: warning /s/^/${DOTNET_WARNING_PREFIX} /;" |
             sed -e "/\: error /s/^/${DOTNET_ERROR_PREFIX} /;" ||
             failed build
     else
-        dotnet msbuild -t:"${TARGET}" -p:PackageRuntime="${RUNTIME_ID}" -p:PackageType="${PACKAGE_TYPE}" -p:BUILDCONFIG="${BUILD_CONFIG}" -p:AgentVersion="${AGENT_VERSION}" -p:LayoutRoot="${LAYOUT_DIR}" -p:CodeAnalysis="true" -p:TargetFramework="${TARGET_FRAMEWORK}" -p:RuntimeFrameworkVersion="${DOTNET_RUNTIME_VERSION}" ||
+        dotnet msbuild -t:"${TARGET}" -p:PackageRuntime="$(escape-s390x $RUNTIME_ID)" -p:PackageType="${PACKAGE_TYPE}" -p:BUILDCONFIG="${BUILD_CONFIG}" -p:AgentVersion="${AGENT_VERSION}" -p:LayoutRoot="${LAYOUT_DIR}" -p:CodeAnalysis="true" -p:TargetFramework="${TARGET_FRAMEWORK}" -p:RuntimeFrameworkVersion="${DOTNET_RUNTIME_VERSION}" ||
             failed build
     fi
 
@@ -222,13 +217,13 @@ function cmd_test_l0() {
         TestFilters="$TestFilters&$DEV_TEST_FILTERS"
     fi
 
-    dotnet msbuild -t:testl0 -p:PackageRuntime="${RUNTIME_ID}" -p:PackageType="${PACKAGE_TYPE}" -p:BUILDCONFIG="${BUILD_CONFIG}" -p:AgentVersion="${AGENT_VERSION}" -p:LayoutRoot="${LAYOUT_DIR}" -p:TestFilters="${TestFilters}" -p:TargetFramework="${TARGET_FRAMEWORK}" -p:RuntimeFrameworkVersion="${DOTNET_RUNTIME_VERSION}" "${DEV_ARGS[@]}" || failed "failed tests"
+    dotnet msbuild -t:testl0 -p:PackageRuntime="$(escape-s390x $RUNTIME_ID)" -p:PackageType="${PACKAGE_TYPE}" -p:BUILDCONFIG="${BUILD_CONFIG}" -p:AgentVersion="${AGENT_VERSION}" -p:LayoutRoot="${LAYOUT_DIR}" -p:TestFilters="${TestFilters}" -p:TargetFramework="${TARGET_FRAMEWORK}" -p:RuntimeFrameworkVersion="${DOTNET_RUNTIME_VERSION}" "${DEV_ARGS[@]}" || failed "failed tests"
 }
 
 function cmd_test_l1() {
     heading "Clean"
 
-    dotnet msbuild -t:cleanl1 -p:PackageRuntime="${RUNTIME_ID}" -p:PackageType="${PACKAGE_TYPE}" -p:BUILDCONFIG="${BUILD_CONFIG}" -p:AgentVersion="${AGENT_VERSION}" -p:LayoutRoot="${LAYOUT_DIR}" || failed build
+    dotnet msbuild -t:cleanl1 -p:PackageRuntime="$(escape-s390x $RUNTIME_ID)" -p:PackageType="${PACKAGE_TYPE}" -p:BUILDCONFIG="${BUILD_CONFIG}" -p:AgentVersion="${AGENT_VERSION}" -p:LayoutRoot="${LAYOUT_DIR}" || failed build
 
     heading "Setup externals folder for $RUNTIME_ID agent's layout"
     bash ./Misc/externals.sh $RUNTIME_ID "" "_l1" "true" || checkRC externals.sh
@@ -244,7 +239,7 @@ function cmd_test_l1() {
         TestFilters="$TestFilters&$DEV_TEST_FILTERS"
     fi
 
-    dotnet msbuild -t:testl1 -p:PackageRuntime="${RUNTIME_ID}" -p:PackageType="${PACKAGE_TYPE}" -p:BUILDCONFIG="${BUILD_CONFIG}" -p:AgentVersion="${AGENT_VERSION}" -p:LayoutRoot="${LAYOUT_DIR}" -p:TestFilters="${TestFilters}" -p:TargetFramework="${TARGET_FRAMEWORK}" -p:RuntimeFrameworkVersion="${DOTNET_RUNTIME_VERSION}" "${DEV_ARGS[@]}" || failed "failed tests"
+    dotnet msbuild -t:testl1 -p:PackageRuntime="$(escape-s390x $RUNTIME_ID)" -p:PackageType="${PACKAGE_TYPE}" -p:BUILDCONFIG="${BUILD_CONFIG}" -p:AgentVersion="${AGENT_VERSION}" -p:LayoutRoot="${LAYOUT_DIR}" -p:TestFilters="${TestFilters}" -p:TargetFramework="${TARGET_FRAMEWORK}" -p:RuntimeFrameworkVersion="${DOTNET_RUNTIME_VERSION}" "${DEV_ARGS[@]}" || failed "failed tests"
 }
 
 function cmd_test() {
@@ -424,7 +419,7 @@ else
     RUNTIME_ID=$DETECTED_RUNTIME_ID
 fi
 
-_VALID_RIDS='linux-x64:linux-arm:linux-arm64:linux-musl-x64:linux-musl-arm64:osx-x64:osx-arm64:win-x64:win-x86:win-arm64'
+_VALID_RIDS='linux-x64:linux-arm:linux-arm64:linux-musl-x64:linux-musl-arm64:osx-x64:osx-arm64:win-x64:win-x86:win-arm64:linux-s390x'
 if [[ ":$_VALID_RIDS:" != *:$RUNTIME_ID:* ]]; then
     failed "must specify a valid target runtime ID (one of: $_VALID_RIDS)"
 fi
