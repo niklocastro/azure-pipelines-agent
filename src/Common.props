@@ -4,7 +4,6 @@
     <TargetFrameworks>net6.0</TargetFrameworks>
     <RuntimeIdentifier>$(PackageRuntime)</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
-    <RuntimeIdentifier>linux-x64</RuntimeIdentifier>
     <TargetLatestRuntimePatch>true</TargetLatestRuntimePatch>
     <AssetTargetFallback>portable-net45+win8</AssetTargetFallback>
     <NoWarn>NU1701;NU1603</NoWarn>
